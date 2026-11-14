@@ -1,23 +1,103 @@
-# DemoTools2: CS2 demo tools for HLAE
+<div align="center">
+  <a href="https://youtu.be/inYPRkl38-4">
+    <img src="docs/tutorial-video.jpg" alt="DemoTools2 tutorial video: before and after of an AK-47 skin. Click to watch on YouTube" width="820">
+  </a>
+  <h1>DemoTools2</h1>
+  <p>
+    <b>Any skin in your CS2 demos, right inside HLAE.</b><br>
+    Knives, gloves, agents, stickers, charms and StatTrak, with separate T and CT loadouts. Free.
+  </p>
+  <p>
+    <a href="https://youtu.be/inYPRkl38-4"><img src="https://img.shields.io/badge/Watch_the_tutorial-YouTube-red?logo=youtube&logoColor=white" alt="Watch the tutorial on YouTube"></a>
+    <a href="https://github.com/janglijoshi/DemoTools2/releases"><img src="https://img.shields.io/github/v/release/janglijoshi/DemoTools2?include_prereleases&label=Download&color=e0a33e" alt="Download the latest release"></a>
+    <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white" alt="Windows 10 and 11">
+    <img src="https://img.shields.io/badge/needs-HLAE-555" alt="Needs HLAE">
+  </p>
+  <p>
+    <a href="https://youtu.be/inYPRkl38-4"><b>▶ Watch the 6-minute tutorial</b></a> ·
+    <a href="https://github.com/janglijoshi/DemoTools2/releases"><b>⬇ Download</b></a> ·
+    <a href="https://github.com/janglijoshi/DemoTools2/issues"><b>🐞 Report a bug</b></a>
+  </p>
+</div>
 
-> Source-available - all rights reserved. Read the [LICENSE](LICENSE) before using or sharing any of this code.
+---
+
+## 🎬 New here? Watch this first
+
+The video covers everything from download to your first skinned demo: installing, launching CS2 through HLAE,
+loading DemoTools2, and every part of the menu (knives, gloves, agents, guns, stickers, charms, T/CT loadouts).
+
+**▶ [Watch it on YouTube](https://youtu.be/inYPRkl38-4)**
+
+## ✨ What it does
+
+| Feature | What you get |
+|---|---|
+| 🔪 **Knives** | Any knife model, with its own animations, and any finish |
+| 🧤 **Gloves** | Any glove type and finish |
+| 🕵️ **Agents** | A different agent for T and CT |
+| 🔫 **Guns** | Any finish, wear, pattern seed, StatTrak counter and name tag |
+| 🏷️ **Stickers** | Up to 5 per gun, searchable across 11,000+ stickers |
+| 🔑 **Charms** | Any charm, with a pattern number |
+| 🔄 **T / CT loadouts** | Different skins per side, switched automatically at half time |
+| 🎯 **Only your guns** | Only guns the player owns change; a gun picked up from someone else keeps its skin |
+| 🕰️ **Older demos** | Works with demos recorded on earlier CS2 versions |
+| 🩺 **Status tab** | After a CS2 or HLAE update, it shows what works and switches off what doesn't |
+| 🎥 **Camera** | Attach the camera to players and guns, record with `mirv_streams`. **Work in progress** |
+
+<p align="center">
+  <img src="docs/menu-skins.png" alt="The DemoTools2 Skins tab: players on the left, the T side loadout in the middle, knife finishes on the right" width="49%">
+  <img src="docs/menu-status.png" alt="The DemoTools2 Status tab listing each part as Working" width="49%">
+</p>
+
+## 🚀 Quick start
+
+1. **Download** `DemoTools2.dll` from [Releases](https://github.com/janglijoshi/DemoTools2/releases) and put it in its own folder.
+2. **Start CS2 through [HLAE](https://www.advancedfx.org/)** with `-insecure`.
+3. **Load it** in the CS2 console:
+   ```
+   mirv_loadlibrary "C:\path\to\DemoTools2\DemoTools2.dll"
+   ```
+4. **Play a demo** and press **Insert** to open the menu.
+
+Your skins save automatically and come back in every demo where that player appears.
+
+## 🔒 Is it safe?
+
+- It's not a separate injector: HLAE loads it with its own `mirv_loadlibrary` command, after the game has started.
+- It refuses to run unless CS2 was started with `-insecure`, which keeps the game off VAC-secured servers.
+- It only changes anything during demo playback.
+- The source code is right here.
+
+Only use it in demos, the way the tutorial shows.
+
+## 🐞 Found a bug?
+
+[Open an issue](https://github.com/janglijoshi/DemoTools2/issues) and attach:
+
+1. `DemoTools2.log` from the DemoTools2 folder
+2. a screenshot of the **Status** tab
+3. `DemoTools2.previous.log` if CS2 crashed
+
+> Source-available, all rights reserved: free to use, but please share this page instead of re-uploading the DLL.
+> See the [LICENSE](LICENSE). Not affiliated with Valve or the HLAE / advancedfx project.
+
+---
+
+# 📖 Full guide
 
 DemoTools2 (formerly DemoSkins) is loaded into CS2 by HLAE and has two parts:
 
-* **Camera and calcs (WIP)** (*Camera* tab, `dt2_calc` / `dt2_cam` / `dt2_preset`): *work in progress - still
-  being built and may change or not work in every demo.* Attach the camera to a player, their
-  gun or their grenade and follow it smoothly, like `mirv_calc` + `mirv_cam` in HLAE for CS:GO. Record it with HLAE's
-  `mirv_streams` as usual.
 * **Skins** (*Skins* tab): choose a player in a CS2 demo by their XUID (SteamID64), then give their guns, knife and
   gloves any finish, wear, pattern seed, StatTrak counter, name tag, **stickers** and a **charm**, and change their
   **agent** (player model). Each player can have a separate **T side** and **CT side** loadout. Only that player's
   items change. It works the way nSkinz did for CS:GO.
+* **Camera and calcs (WIP)** (*Camera* tab, `dt2_calc` / `dt2_cam` / `dt2_preset`): *work in progress - still
+  being built and may change or not work in every demo.* Attach the camera to a player, their gun or their grenade
+  and follow it smoothly, like `mirv_calc` + `mirv_cam` in HLAE for CS:GO. Record it with HLAE's `mirv_streams`.
 
 Coming from DemoSkins: load `DemoTools2.dll` *instead of* `DemoSkins.dll` (not both). Your skins are taken over from
 `DemoSkins.cfg` in the same folder the first time.
-
-It only does anything while a **demo is playing** in CS2 started with **`-insecure`** (HLAE adds this for you). In any
-other game it refuses to start, so it can't be used in matchmaking or on VAC servers.
 
 ## Use it
 
@@ -31,7 +111,7 @@ other game it refuses to start, so it can't be used in matchmaking or on VAC ser
 3. Play a demo (`playdemo mydemo`). The DemoTools2 window shows (press **Insert** in CS2 to show or hide it):
    * **Left:** the players in the demo (hover a name to see their XUID). You can also add a player by XUID.
    * **Middle:** *Both sides / T side / CT side* buttons, then *Knife*, *Gloves* and *Agent*, then that player's
-     guns. The guns they are holding right now are marked `>`.
+     guns. The guns they are holding right now are at the top, with a green dot.
    * **Right:** for knife and gloves, first pick the model (Karambit, Sport Gloves, ...). Then the finish list
      (search it, coloured by rarity), wear (with FN/MW/FT/WW/BS buttons), pattern seed, StatTrak with a kill count
      (guns and knives), name tag, and *Remove*. Guns also have **Stickers** and **Charm** tabs; *Agent* shows the
