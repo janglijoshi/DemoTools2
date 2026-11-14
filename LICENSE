@@ -1,76 +1,173 @@
-DemoTools2 Source-Available License
-Version 1.0
+# DemoTools2 Source-Available Non-Commercial License
+### Version 1.0
 
 Copyright (c) 2026 janglijoshi. All rights reserved.
 
-DemoTools2 (the "Software") - its source code, build scripts, generated data files, documentation and any compiled
-binaries made from it - is owned by the copyright holder named above. The Software is published so people can read
-it, learn from it, build it for themselves and help improve it. It is NOT open source. Except for the permissions
-written below, no rights are granted.
+Thank you for taking an interest in DemoTools2.
 
-1. WHAT YOU MAY DO
+DemoTools2 is a source-available software project created and maintained by the copyright holder named above. Its source code is published to encourage learning, exploration, feedback, and community contributions.
 
-   a) View and study the source code.
-   b) Download, compile and run the Software on your own computer for your own personal, non-commercial use.
-   c) Change your own local copy for your own personal, non-commercial use, as long as you do not share it
-      (see section 2).
-   d) Fork this repository on GitHub, only as far as the GitHub Terms of Service require, and only to propose changes
-      back to this repository through pull requests.
-   e) Share links to the official repository and to the official releases.
+This license is intended to make the project accessible for personal and educational use while protecting the original work, its identity, and the rights of its creator.
 
-2. WHAT YOU MAY NOT DO
+By accessing, using, or building the Software, you agree to the following terms.
 
-   Without the copyright holder's prior written permission, you may not:
+## 1. DEFINITIONS
 
-   a) Copy, re-upload, mirror, republish or redistribute the Software or any part of it - source code or compiled
-      binaries, changed or unchanged - anywhere other than the official repository and its official releases.
-   b) Sell, rent, license, or otherwise use the Software or any part of it commercially, including bundling it with
-      paid products, paid services, paid access, or putting it behind a paywall, subscription, key or login.
-   c) Include the Software, or code taken from it, in another project, program, tool, mod or plugin.
-   d) Remove, hide or change this licence, copyright notices, credits or "about" information in the Software.
-   e) Claim, suggest or imply that you made the Software or any part of it, or publish it under another name.
-   f) Use the names "DemoTools2" or "DemoTools" for another product, or in a way that suggests the copyright holder
-      endorses you or your work.
+For the purposes of this license:
 
-3. CONTRIBUTIONS
+**"Software"** means DemoTools2 in its entirety, including its source code, object code, compiled binaries, build scripts, configuration files, generated data, documentation, assets, and other materials distributed as part of the project.
 
-   If you send a contribution (for example a pull request, patch, issue text or code snippet), you confirm that you
-   have the right to send it, and you grant the copyright holder a perpetual, worldwide, irrevocable, royalty-free
-   licence to use, change, relicense and distribute it as part of the Software or otherwise. Contributors receive no
-   ownership of the Software.
+**"You"** means any individual or organization accessing or using the Software.
 
-4. THIRD-PARTY COMPONENTS
+**"Copyright Holder"** means janglijoshi, the original copyright holder of DemoTools2.
 
-   Some files in this repository belong to others and are licensed under their own terms, which take precedence for
-   those files. They are listed in NOTICE.md (for example, Dear ImGui under the MIT licence in third_party/imgui/).
-   This licence does not restrict your rights to those components under their own licences.
+**"Commercial Use"** means any use intended primarily for commercial advantage, monetary compensation, or business purposes, whether directly or indirectly.
 
-5. TRADEMARKS AND AFFILIATION
+## 2. PERMITTED USE
 
-   Counter-Strike 2, CS2, Steam and Valve are trademarks of Valve Corporation. HLAE belongs to the advancedfx project.
-   The Software is not made by, affiliated with, or endorsed by Valve Corporation or the advancedfx / HLAE project.
-   Names of in-game items appear only so the Software can refer to them.
+Subject to the terms of this license, you are welcome to:
 
-6. USE AT YOUR OWN RISK
+a) View, read, study, and explore the publicly available source code.
 
-   The Software only works in CS2 demo playback started with "-insecure" (through HLAE). You are responsible for how
-   you use it and for following the terms of any game or service you use it with.
+b) Download, compile, build, and run the Software for your own personal, non-commercial use.
 
-7. NO WARRANTY
+c) Modify your own local copy for personal, educational, or experimental purposes, provided that your modifications remain private and are not distributed or published.
 
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-   THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
-   COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
-   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-   IN THE SOFTWARE, INCLUDING LOSS OF DATA, GAME CRASHES, OR ACTIONS TAKEN BY THIRD PARTIES AGAINST YOUR ACCOUNTS.
+d) Use the Software as a learning resource to understand its architecture, implementation, and development techniques.
 
-8. TERMINATION
+e) Submit bug reports, suggestions, improvements, and contributions through the official repository.
 
-   Any use outside these terms ends all permissions given to you by this licence, automatically and immediately.
-   The copyright holder may enforce these terms, including by sending takedown notices (such as DMCA notices) for
-   copies published without permission.
+f) Fork the official GitHub repository solely to the extent permitted by GitHub's Terms of Service and for the purpose of contributing changes back to the original project through pull requests.
 
-9. PERMISSION REQUESTS
+g) Share links to the official repository and officially published releases.
 
-   For any use not allowed above (for example, including DemoTools2 in a project, redistributing it, or commercial
-   use), ask the copyright holder first through the official repository's issue tracker or contact details.
+These permissions are granted as a limited, non-exclusive, non-transferable, and revocable license. No ownership rights are transferred to you.
+
+## 3. RESTRICTIONS
+
+To protect the original project and its development, the following activities require prior written permission from the Copyright Holder.
+
+You may not:
+
+a) Redistribute, mirror, re-upload, republish, or otherwise make the Software or any portion of it available outside the official repository and its officially authorized releases.
+
+b) Distribute modified, adapted, or recompiled versions of the Software, including versions containing only minor changes.
+
+c) Sell, rent, sublicense, monetize, or commercially exploit the Software or any portion of it.
+
+d) Include, embed, bundle, or incorporate the Software or code derived from it into another application, product, service, modification, plugin, or project.
+
+e) Offer the Software through paid access, subscriptions, memberships, licensing arrangements, private distribution channels, or other monetized platforms.
+
+f) Copy substantial portions of the Software's source code, architecture, or implementation into another project or publish derivative works based on it.
+
+g) Remove, modify, conceal, or misrepresent copyright notices, licensing information, attribution, credits, or ownership information.
+
+h) Claim ownership, authorship, or original development of DemoTools2 or any substantial portion of its original implementation.
+
+i) Publish the Software, or a modified version of it, under another name or identity in a manner that suggests it is an independently developed product.
+
+j) Use the names "DemoTools2" or "DemoTools", or associated branding, in connection with another product in a way that creates confusion about ownership, origin, or endorsement.
+
+## 4. OWNERSHIP AND COPYRIGHT
+
+DemoTools2 and its original components remain the intellectual property of the Copyright Holder.
+
+Making the source code publicly available does not transfer ownership or grant any rights beyond those expressly stated in this license.
+
+All rights not specifically granted under this license are reserved by the Copyright Holder.
+
+Nothing in this license should be interpreted as granting permission to claim, register, or represent the Software as your own intellectual property.
+
+## 5. CONTRIBUTIONS
+
+Community contributions, suggestions, and feedback are welcome and appreciated.
+
+By submitting a contribution to the official repository, including code, patches, documentation, or other materials, you confirm that:
+
+a) You have the legal right to submit the contribution.
+
+b) Your contribution does not knowingly infringe upon another person's intellectual property rights.
+
+c) You grant the Copyright Holder a perpetual, worldwide, non-exclusive, irrevocable, royalty-free license to use, reproduce, modify, adapt, distribute, sublicense, and incorporate your contribution into DemoTools2 and other works.
+
+d) You retain ownership of the original intellectual property in your contribution, except for rights expressly granted under this section.
+
+Submitting a contribution does not automatically make you a co-owner of DemoTools2 or grant you ownership of the existing project.
+
+## 6. THIRD-PARTY COMPONENTS
+
+DemoTools2 may contain or depend on software, libraries, assets, and other materials developed by third parties.
+
+Such components remain subject to their respective licenses and copyright notices.
+
+Where a third-party license grants permissions that differ from this license, its terms take precedence for the relevant third-party component.
+
+Third-party components and their licenses are documented in NOTICE.md or the relevant project directories wherever applicable.
+
+Nothing in this license is intended to restrict rights independently granted by the owners of third-party components.
+
+## 7. TRADEMARKS AND AFFILIATION
+
+Counter-Strike 2, CS2, Steam, and Valve are trademarks or registered trademarks of Valve Corporation.
+
+HLAE is associated with the advancedfx project.
+
+DemoTools2 is an independent community-developed project. It is not affiliated with, sponsored by, officially associated with, or endorsed by Valve Corporation or the advancedfx / HLAE project.
+
+References to game-related names, maps, weapons, and in-game items are used solely for identification and compatibility purposes.
+
+## 8. SOFTWARE REQUIREMENTS AND RESPONSIBILITY
+
+DemoTools2 is designed to operate with CS2 demo playback initiated using the "-insecure" launch option through HLAE.
+
+You are responsible for ensuring that your use of the Software complies with the applicable terms, policies, and requirements of the games, services, and third-party tools you use.
+
+The Copyright Holder does not guarantee that using the Software will be free from account restrictions, compatibility issues, game crashes, or other consequences arising from third-party services.
+
+## 9. DISCLAIMER OF WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, WHETHER EXPRESS, IMPLIED, OR STATUTORY.
+
+THIS INCLUDES, WITHOUT LIMITATION, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+THE COPYRIGHT HOLDER AND CONTRIBUTORS DO NOT WARRANT THAT THE SOFTWARE WILL BE ERROR-FREE, UNINTERRUPTED, SECURE, OR COMPATIBLE WITH ALL SYSTEMS OR FUTURE SOFTWARE VERSIONS.
+
+## 10. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COPYRIGHT HOLDER AND CONTRIBUTORS SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR OTHER DAMAGES ARISING FROM OR RELATED TO THE SOFTWARE OR ITS USE.
+
+THIS INCLUDES, WITHOUT LIMITATION, LOSS OF DATA, SYSTEM DAMAGE, GAME CRASHES, ACCOUNT RESTRICTIONS, LOSS OF PROFITS, OR ACTIONS TAKEN BY THIRD-PARTY SERVICES.
+
+NOTHING IN THIS SECTION EXCLUDES LIABILITY THAT CANNOT LAWFULLY BE EXCLUDED UNDER APPLICABLE LAW.
+
+## 11. TERMINATION
+
+The permissions granted under this license automatically terminate if you materially violate its terms.
+
+Upon termination, you must stop all activities that rely on the permissions granted by this license and cease any unauthorized distribution or use of the Software.
+
+Termination does not affect any rights or remedies that may be available to the Copyright Holder under applicable law.
+
+## 12. PERMISSIONS AND LICENSING INQUIRIES
+
+If you would like to use DemoTools2 in a way that is not covered by this license, including commercial use, redistribution, integration into another project, or publication of modified versions, please contact the Copyright Holder through the official GitHub repository's issue tracker or the contact details provided there.
+
+Requests for additional permissions will be considered individually.
+
+The Copyright Holder welcomes legitimate inquiries, collaborations, and opportunities to work with the community.
+
+## 13. GOVERNING LAW AND GENERAL TERMS
+
+This license shall be interpreted in accordance with applicable copyright and intellectual property laws.
+
+If any provision of this license is found to be unenforceable, the remaining provisions shall continue to apply to the fullest extent permitted by law.
+
+This license represents the terms under which DemoTools2 is made available. Any additional permissions must be granted in writing by the Copyright Holder.
+
+---
+
+**DemoTools2**  
+Created and maintained by **janglijoshi**.
+
+Source available. Built for learning, experimentation, and the community.
