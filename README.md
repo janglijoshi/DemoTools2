@@ -4,14 +4,16 @@
   </a>
   <h1>DemoTools2</h1>
   <p>
-    <b>Any skin in your CS2 demos, right inside HLAE.</b><br>
-    Knives, gloves, agents, stickers, charms and StatTrak, with separate T and CT loadouts. Free.
+    <b>Skins, kill clips and cinematics for your CS2 demos, right inside HLAE.</b><br>
+    Any knife, gloves, agent, sticker and charm; every kill of a player recorded to MP4 with motion blur;
+    smooth campaths built with the demo paused. Free and open source.
   </p>
   <p>
     <a href="https://youtu.be/inYPRkl38-4"><img src="https://img.shields.io/badge/Watch_the_tutorial-YouTube-red?logo=youtube&logoColor=white" alt="Watch the tutorial on YouTube"></a>
     <a href="https://github.com/janglijoshi/DemoTools2/releases"><img src="https://img.shields.io/github/v/release/janglijoshi/DemoTools2?include_prereleases&label=Download&color=e0a33e" alt="Download the latest release"></a>
     <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white" alt="Windows 10 and 11">
     <img src="https://img.shields.io/badge/needs-HLAE-555" alt="Needs HLAE">
+    <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-2ea44f" alt="MIT License"></a>
   </p>
   <p>
     <a href="https://youtu.be/inYPRkl38-4"><b>▶ Watch the 6-minute tutorial</b></a> ·
@@ -25,7 +27,9 @@
 ## 🎬 New here? Watch this first
 
 The video covers everything from download to your first skinned demo: installing, launching CS2 through HLAE,
-loading DemoTools2, and every part of the menu (knives, gloves, agents, guns, stickers, charms, T/CT loadouts).
+loading DemoTools2, and the skins menu (knives, gloves, agents, guns, stickers, charms, T/CT loadouts). It was made
+before 2.0, so the window looks different now (a sidebar instead of tabs); the steps are the same. Record and
+Cinematics are explained [further down](#record-kill-clips).
 
 **▶ [Watch it on YouTube](https://youtu.be/inYPRkl38-4)**
 
@@ -48,9 +52,23 @@ loading DemoTools2, and every part of the menu (knives, gloves, agents, guns, st
 | 🩺 **Status** | After a CS2 or HLAE update, it shows what works and switches off what doesn't |
 
 <p align="center">
-  <img src="docs/menu-skins.png" alt="The DemoTools2 Skins tab: players on the left, the T side loadout in the middle, knife finishes on the right" width="49%">
-  <img src="docs/menu-status.png" alt="The DemoTools2 Status tab listing each part as Working" width="49%">
+  <img src="docs/menu-skins.png" alt="Skins page: the players in the demo on the left, one player's loadout in the middle, the AK-47 finish list with wear and pattern seed on the right" width="49%">
+  <img src="docs/menu-record.png" alt="Record page: the demo found by itself, the player chosen, and five kill clips with round, kills and length, ready to record" width="49%">
+  <img src="docs/menu-cinematics.png" alt="Cinematics page: a five-point campath sequence on a top-down map, with auto timing and the selected point's settings" width="49%">
+  <img src="docs/menu-status.png" alt="Status page: 13 parts working, none limited or off" width="49%">
 </p>
+<p align="center"><sub>The 2.0 window: pick a page in the sidebar. Skins, Record, Cinematics and Status shown.</sub></p>
+
+## 🆕 New in 2.0
+
+* **Record:** pick a player and press *Record*: every kill of theirs in the demo becomes an MP4 clip with motion
+  blur, plus one video with all of them joined.
+* **Cinematics:** pause the demo, add camera points, press *Generate*: DemoTools2 times the path for you. Hotkeys,
+  cuts, orbit / dolly moves, and recording the path to MP4.
+* **A new window:** sidebar navigation, page headers, and a Status page with summary tiles.
+* **MIT License:** DemoTools2 is now open source.
+
+Everything else is in the [changelog](CHANGELOG.md).
 
 ## 🚀 Quick start
 
@@ -60,9 +78,11 @@ loading DemoTools2, and every part of the menu (knives, gloves, agents, guns, st
    ```
    mirv_loadlibrary "C:\path\to\DemoTools2\DemoTools2.dll"
    ```
-4. **Play a demo** and press **Insert** to open the menu.
+4. **Play a demo** and press **Insert** to open the menu. Pick a page in the sidebar: **Skins**, **Record**,
+   **Cinematics**, **Camera** or **Status**.
 
-Your skins save automatically and come back in every demo where that player appears.
+Your skins save automatically and come back in every demo where that player appears. To record, Record and
+Cinematics use HLAE's own recording, so set up ffmpeg in HLAE once (*File → Settings*).
 
 ## 🔒 Is it safe?
 
@@ -78,11 +98,10 @@ Only use it in demos, the way the tutorial shows.
 [Open an issue](https://github.com/janglijoshi/DemoTools2/issues) and attach:
 
 1. `DemoTools2.log` from the DemoTools2 folder
-2. a screenshot of the **Status** tab
+2. a screenshot of the **Status** page
 3. `DemoTools2.previous.log` if CS2 crashed
 
-> Source-available, all rights reserved: free to use, but please share this page instead of re-uploading the DLL.
-> See the [LICENSE](LICENSE). Not affiliated with Valve or the HLAE / advancedfx project.
+> Free and open source under the [MIT License](LICENSE). Not affiliated with Valve or the HLAE / advancedfx project.
 
 ---
 
@@ -99,7 +118,8 @@ DemoTools2 (formerly DemoSkins) is loaded into CS2 by HLAE. Its window has five 
   gloves any finish, wear, pattern seed, StatTrak counter, name tag, **stickers** and a **charm**, and change their
   **agent** (player model). Each player can have a separate **T side** and **CT side** loadout. Only that player's
   items change. It works the way nSkinz did for CS:GO.
-* **Status**: what DemoTools2 found in this CS2 build, and what is switched off.
+* **Status**: what DemoTools2 found in this CS2 build, and what is switched off. Summary tiles show how many parts are
+  working, limited or off; *Open the log* and *Open DemoTools2 folder* take you to the files to send with a bug report.
 
 Coming from DemoSkins: load `DemoTools2.dll` *instead of* `DemoSkins.dll` (not both). Your skins are taken over from
 `DemoSkins.cfg` in the same folder the first time.
@@ -129,6 +149,8 @@ To load it automatically, add the `mirv_loadlibrary` line to HLAE's CS2 config, 
 
 ## Record (kill clips)
 
+<p align="center"><img src="docs/menu-record.png" alt="The Record page with five kill clips listed" width="820"></p>
+
 The **Record** tab records every kill of one player, by itself, through HLAE's own recording (`mirv_streams`) and
 HLAE's ffmpeg. Start CS2 through HLAE as usual, and set up ffmpeg in HLAE once (File > Settings).
 
@@ -151,6 +173,8 @@ Motion blur makes the game run at frame rate x samples frames a second and blend
 the clips last.
 
 ## Cinematics (campaths)
+
+<p align="center"><img src="docs/menu-cinematics.png" alt="The Cinematics page with a five-point sequence on the top-down map" width="820"></p>
 
 The **Cinematics** tab makes camera moves through keyframes, timed to the demo. Record them with HLAE's
 `mirv_streams` as usual.
@@ -222,6 +246,8 @@ Cinematics tab has switches for it (POV HUD, scoreboard sync, buy menu) when the
 playing with **Hide the HUD** on hides the POV HUD too, and it comes back afterwards.
 
 ## Camera and calcs (beta)
+
+<p align="center"><img src="docs/menu-camera.png" alt="The Camera page: the camera attached to the gun muzzle, with the live calcs and the command line" width="820"></p>
 
 > **Beta.** The camera tools may still change in later versions and may not work in every demo. The skins part doesn't
 > depend on them.
@@ -520,11 +546,11 @@ Typical messages:
 
 ## Licence
 
-DemoTools2 is **source-available, not open source**: Copyright (c) 2026 janglijoshi, all rights reserved. You may
-read the code, build it and use it yourself, and send pull requests. You may **not** re-upload, redistribute, sell,
-or reuse it (or parts of it) in other projects without written permission. The full terms are in [LICENSE](LICENSE).
+DemoTools2 is open source under the **MIT License**, Copyright (c) 2026 janglijoshi. You may use, copy, change and
+share it, including in your own projects, as long as the copyright and licence notice stay with it. The full text is
+in [LICENSE](LICENSE). Pull requests are welcome.
 
-Download DemoTools2 only from this repository's **Releases** page.
+The official downloads are on this repository's **Releases** page.
 
 Third-party parts (Dear ImGui, MIT) keep their own licences, and the credits (HLAE / advancedfx, cs2-dumper) are in
 [NOTICE.md](NOTICE.md). DemoTools2 isn't made by or affiliated with Valve or the HLAE project.
