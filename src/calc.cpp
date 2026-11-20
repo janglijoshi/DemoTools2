@@ -2,6 +2,9 @@
 // Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
 // Calcs and the DemoTools2 camera. See calc.h and README ("Camera and calcs").
 #include "calc.h"
+#include "campath.h"
+#include "pov.h"
+#include "record.h"
 #include "console.h"
 #include "game.h"
 #include "util.h"
@@ -814,11 +817,21 @@ static bool g_blending = false;
 static View g_blendFrom;
 static double g_blendStart = 0;
 static bool g_hadOutput = false;
+static bool g_campathOn = false;   // the campath drives the view this frame
 
 static float SmoothStep(float x) { x = std::clamp(x, 0.f, 1.f); return x * x * (3 - 2 * x); }
 
 // Runs once per frame while a demo plays (from the view hook): evaluates every calc, prepares the camera.
+static float ViewValueInner();
+// The view hook: CS2 has worked out the camera for this frame by now (what our hook reads from the view set-up).
 static float ViewValue() {
+    Pov::OnViewSetup();
+    const float v = ViewValueInner();
+    Pov::OnViewDone();
+    Record::OnFrame();
+    return v;
+}
+static float ViewValueInner() {
     std::unique_lock<std::mutex> g(lock, std::try_to_lock);
     if (!g.owns_lock()) return g_wantOverride ? 1.f : Game::OriginalDemoViewOverrideValue();   // the window is editing: keep last frame's result
     static const bool off = CrashedLastTime("camera");
@@ -837,7 +850,53 @@ static float ViewValue() {
     g_preview.swap(pv);
 
     cam.active = false;
-    if (cam.enabled) {
+    // A campath that is playing (or previewing) has the camera; the calc camera waits.
+    {
+        float aim[3];
+        bool haveAim = false;
+        uint64_t aimXuid = 0;
+        int aimPart = 0;
+        {
+            std::lock_guard<std::mutex> cg(Campath::lock);
+            if (Campath::set.aim == 1) { aimXuid = Campath::set.aimXuid; aimPart = Campath::set.aimPart; }
+        }
+        if (aimXuid)
+            for (const PlayerRef& p : Players())
+                if (p.xuid == aimXuid && p.pawn) {
+                    View v;
+                    if (EyeView(p.pawn, v)) {
+                        const float drop = aimPart == 1 ? 22.f : aimPart == 2 ? 62.f : 0.f;   // chest / feet below the eyes
+                        aim[0] = v.pos.x; aim[1] = v.pos.y; aim[2] = v.pos.z - drop;
+                        haveAim = true;
+                    }
+                    break;
+                }
+        float cp[3], ca[3], cf = 90.f;
+        g_campathOn = Campath::Evaluate(Game::CurTime(), haveAim ? aim : nullptr, cp, ca, cf);
+        if (g_campathOn) {
+            g_out.pos = {cp[0], cp[1], cp[2]};
+            g_out.ang = {ca[0], ca[1], ca[2]};
+            g_outFov = cf;
+            g_wantOverride = true;
+        }
+    }
+    uint32_t povPawn = 0;
+    bool povCam = false;
+    if (!g_campathOn && Pov::CameraPawn(povPawn))
+        if (void* pawn = Game::FromHandleExact(povPawn)) {
+            View v;
+            if (EyeView(pawn, v)) {
+                g_out = v;
+                g_outFov = 0;
+                g_wantOverride = true;
+                povCam = true;
+            }
+        }
+    if (g_campathOn) {
+        cam.status = "the campath has the camera (Cinematics tab)";
+    } else if (povCam) {
+        cam.status = "POV test 2 has the camera";
+    } else if (cam.enabled) {
         Node* src = cam.source.empty() ? nullptr : Find(cam.source);
         if (!src) cam.status = cam.source.empty() ? "no source - choose a vecang calc" : "source calc '" + cam.source + "' doesn't exist";
         else if (src->kind != Kind::VecAng) cam.status = "source must be a vecang calc";
@@ -888,9 +947,12 @@ static float ViewValue() {
         g_hadOutput = false;
         g_blending = false;
     }
-    if (cam.hideViewmodel) SetViewmodel(!cam.active);
-    else SetViewmodel(true);
-    KeepThirdPerson(cam.enabled && cam.thirdPerson && cam.active);
+    if (!g_campathOn) {
+        if (cam.hideViewmodel) SetViewmodel(!cam.active);
+        else SetViewmodel(true);
+    }
+    KeepThirdPerson(!g_campathOn && cam.enabled && cam.thirdPerson && cam.active);
+    Campath::AfterFrame(g_campathOn);
     FirstRunEnd("camera");
     return g_wantOverride ? 1.f : Game::OriginalDemoViewOverrideValue();
 }
@@ -933,16 +995,16 @@ void OnGameThread() {
     done = true;
     if (CrashedLastTime("console-register")) {
         Log("console commands are off this session (registering them crashed last time) - use the command line in the window");
-        SetFeature("console", "Console commands (WIP)", Feat_Off, "Crashed last time - use the command line in the Camera tab.");
-    } else if (Console::Install()) SetFeature("console", "Console commands (WIP)", Feat_Ok);
-    else SetFeature("console", "Console commands (WIP)", Feat_Off, "Not found in this CS2 version - use the command line in the Camera tab.");
+        SetFeature("console", "Console commands", Feat_Off, "Crashed last time - use the command line in the Camera tab.");
+    } else if (Console::Install()) SetFeature("console", "Console commands", Feat_Ok);
+    else SetFeature("console", "Console commands", Feat_Off, "Not found in this CS2 version - use the command line in the Camera tab.");
     if (CrashedLastTime("camera")) {
         cam.status = "the camera crashed last time - off for this session";
-        SetFeature("camera", "Camera (WIP)", Feat_Off, "Crashed last time - off for this session.");
+        SetFeature("camera", "Camera", Feat_Off, "Crashed last time - off for this session.");
     } else if (!Game::InstallViewHook(&ViewValue, &ViewApply)) {
         cam.status = "the camera can't take over the view in this CS2 version (see DemoTools2.log)";
-        SetFeature("camera", "Camera (WIP)", Feat_Off, "The view code wasn't found (CS2 or HLAE update). Skins are not affected.");
-    } else SetFeature("camera", "Camera (WIP)", Feat_Ok);
+        SetFeature("camera", "Camera", Feat_Off, "The view code wasn't found (CS2 or HLAE update). Skins are not affected.");
+    } else SetFeature("camera", "Camera", Feat_Ok);
 }
 
 }   // namespace Calc

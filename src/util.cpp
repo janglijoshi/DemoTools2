@@ -1,5 +1,6 @@
 // Copyright (c) 2026 janglijoshi. All rights reserved.
 // Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+#include <vector>
 #include "util.h"
 #include <cstdarg>
 #include <cstdio>
@@ -224,17 +225,85 @@ void Log(const char* fmt, ...) {
     if (g_msg) g_msg("[DemoTools2] %s\n", buf);
 }
 
+double NowMs() {
+    static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+}
+void SlowCheck(const char* what, double ms) {
+    if (ms < 3.0) return;
+    static double lastLog = 0;
+    static int count = 0;
+    const double now = NowMs();
+    ++count;
+    if (now - lastLog < 5000) return;
+    Log("SLOW: DemoTools2 took %.1f ms in '%s' in one frame (%d slow frame(s) since the last note)", ms, what, count);
+    lastLog = now;
+    count = 0;
+}
+
+void PerfAdd(const char* part, double ms) {
+    struct Acc { double total = 0, max = 0; int calls = 0; };
+    static std::vector<std::pair<const char*, Acc>> parts;   // game thread only
+    static double since = 0;
+    Acc* a = nullptr;
+    for (auto& p : parts) if (p.first == part) { a = &p.second; break; }
+    if (!a) { parts.push_back({part, Acc{}}); a = &parts.back().second; }
+    a->total += ms; a->calls++; if (ms > a->max) a->max = ms;
+    const double now = NowMs();
+    if (!since) since = now;
+    if (now - since < 5000) return;
+    double sum = 0;
+    for (auto& p : parts) sum += p.second.total;
+    if (sum > 50) {   // more than 1% of the time
+        std::string line;
+        for (auto& p : parts) {
+            if (p.second.total < 1) continue;
+            char b[160];
+            std::snprintf(b, sizeof(b), "%s %.0f ms (%d calls, max %.1f), ", p.first, p.second.total, p.second.calls, p.second.max);
+            line += b;
+        }
+        Log("PERF last 5 s: %s", line.c_str());
+    }
+    for (auto& p : parts) p.second = Acc{};
+    since = now;
+}
+
+// Asking Windows (VirtualQuery) is slow in CS2's big process - about half a millisecond a call - and DemoTools2 checks
+// pointers many times a frame. So each thread remembers the last few memory regions it found readable, for half a
+// second (memory CS2 frees is not reused that fast for the same objects), and only asks Windows about new ones.
+struct ReadableRegion { uintptr_t start = 0, end = 0; ULONGLONG until = 0; };
+static thread_local ReadableRegion t_regions[32];
+static thread_local unsigned t_next = 0;
+
+static bool QueryReadable(uintptr_t cur, ReadableRegion& out) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(reinterpret_cast<const void*>(cur), &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    const DWORD ok = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (!(mbi.Protect & ok) || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+    out.start = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    out.end = out.start + mbi.RegionSize;
+    return true;
+}
+
 bool Readable(const void* p, size_t size) {
     if (!p || reinterpret_cast<uintptr_t>(p) < 0x10000) return false;
-    MEMORY_BASIC_INFORMATION mbi;
-    const uint8_t* cur = static_cast<const uint8_t*>(p);
-    const uint8_t* end = cur + size;
+    uintptr_t cur = reinterpret_cast<uintptr_t>(p);
+    const uintptr_t end = cur + size;
+    if (end < cur) return false;
+    const ULONGLONG now = GetTickCount64();
     while (cur < end) {
-        if (!VirtualQuery(cur, &mbi, sizeof(mbi))) return false;
-        if (mbi.State != MEM_COMMIT) return false;
-        const DWORD ok = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-        if (!(mbi.Protect & ok) || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
-        cur = static_cast<const uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+        bool hit = false;
+        for (auto& r : t_regions)
+            if (r.until > now && cur >= r.start && cur < r.end) { cur = r.end; hit = true; break; }
+        if (hit) continue;
+        ReadableRegion r;
+        if (!QueryReadable(cur, r)) return false;
+        r.until = now + 500;
+        t_regions[t_next++ % 32] = r;
+        cur = r.end;
     }
     return true;
 }

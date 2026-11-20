@@ -4,7 +4,11 @@
 #include "extras.gen.h"
 #include "catalog.gen.h"
 #include "game.h"
+#include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <set>
@@ -1468,6 +1472,7 @@ static bool ApplyAgent(void* pawn, uint32_t handle, const std::string* want, ULO
     return true;
 }
 
+
 // ------------------------------------------------------------------ demo jumps
 // Jumping in a demo (demo_gototick, round skip, the demo UI's timeline) makes CS2 go back to the last full snapshot and
 // fast-forward from there, running the frame stages for every tick on the way without drawing. Doing the full skins
@@ -1528,6 +1533,7 @@ void OnFrameStage(int stage) {
         if (!keepOff && guard.try_lock() && demoPlaying && settings.enabled && !g_weapons.empty()) {
             Step step("keeping weapon meshes");
             FirstRunBegin("mesh-keep");
+            PerfScope ps("keeping weapon meshes");
             ReassertMeshes();
             FirstRunEnd("mesh-keep");
         }
@@ -1543,6 +1549,7 @@ void OnFrameStage(int stage) {
     }
 
     {
+        PerfScope ps("demo check");
         Step step("checking for demo playback");
         FirstRunBegin("demo-check");
         demoPlaying = Game::IsPlayingDemo();

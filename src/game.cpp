@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <cstdlib>
@@ -577,12 +578,14 @@ static void FindPrecache(const Text& t) {
     Log(g_nameSet && g_bufPurge ? "model loading found" : "model loading not found");
 }
 
-bool PrecacheModel(const char* path) {
+bool PrecacheModel(const char* path) { return PrecacheResource(path, 0x6C646D76); }   // 'vmdl'
+
+bool PrecacheResource(const char* path, uint32_t type) {
     if (!g_nameSet || !g_bufPurge || !g_resourceSystem || !*g_resourceSystem || !path || !*path) return false;
     alignas(16) uint8_t name[0x100] = {};
     *(uint32_t*)(name + 4) = 0xC00000C8;   // inline storage of 200 characters
     g_nameSet(name, path);
-    bool ok = *(uint64_t*)(name + 0xD8) == 0x6C646D76;   // resource type 'vmdl'
+    bool ok = *(uint64_t*)(name + 0xD8) == type;   // resource type, e.g. 'vmdl', 'vpcf'
     if (ok) {
         void* rs = *g_resourceSystem;
         ((PrecacheFn)(*(void***)rs)[g_precacheOff / 8])(rs, name, "DemoTools2");
@@ -836,6 +839,30 @@ void ChangeSubclass(void* entity, uint32_t token) {
 void RegenerateWeaponSkins() { if (g_regenerate) g_regenerate(nullptr, nullptr); }
 
 // Called for every weapon every frame: plain null checks only (these are the game's own live pointers).
+// Whether the entity's model is really loaded: CModelState::m_hModel is a resource handle whose first pointer is the
+// loaded model (null while it isn't, e.g. a model the resource system couldn't find).
+bool ModelLoaded(void* entity) {
+    static ptrdiff_t oModel = -1;
+    if (oModel < 0 && !SchemaField("CModelState", "m_hModel", oModel)) oModel = 0;
+    if (oModel <= 0 || !entity) return false;
+    uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
+    if ((uintptr_t)node < 0x10000) return false;
+    void* h = Get<void*>(node, O.skeleton_modelState + oModel);
+    return h && Readable(h, 8) && *(void**)h != nullptr;
+}
+
+void* ModelData(void* entity) {
+    static ptrdiff_t oModel = -1;
+    if (oModel < 0 && !SchemaField("CModelState", "m_hModel", oModel)) oModel = 0;
+    if (oModel <= 0 || !entity) return nullptr;
+    uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
+    if ((uintptr_t)node < 0x10000) return nullptr;
+    void* h = Get<void*>(node, O.skeleton_modelState + oModel);
+    if (!h || !Readable(h, 8)) return nullptr;
+    void* d = *(void**)h;
+    return d && Readable(d, 0x358) ? d : nullptr;
+}
+
 const char* ModelName(void* entity) {
     uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
     if ((uintptr_t)node < 0x10000) return nullptr;
@@ -1025,6 +1052,104 @@ static bool Patch(uint8_t* at, const uint8_t* bytes, size_t n) {
     return true;
 }
 
+// ---- the camera position (campath map, quick moves)
+static ViewValueFn g_userValue = nullptr;
+static ViewApplyFn g_userApply = nullptr;
+static void* volatile g_viewSetup = nullptr;
+static float g_viewPos[3] = {0, 0, 0}, g_viewAng[3] = {0, 0, 0}, g_viewFov = 0;
+static volatile ULONGLONG g_viewPosAt = 0;
+static void CopyViewPos(void* setup) {
+    uint8_t* s = (uint8_t*)setup;
+    if (!s || viewOriginOff <= 0 || !Readable(s + viewOriginOff, 12)) return;
+    const float* o = (const float*)(s + viewOriginOff);
+    if (!std::isfinite(o[0]) || !std::isfinite(o[1]) || !std::isfinite(o[2])) return;
+    g_viewPos[0] = o[0]; g_viewPos[1] = o[1]; g_viewPos[2] = o[2];
+    if (viewAnglesOff > 0 && Readable(s + viewAnglesOff, 12)) {
+        const float* a = (const float*)(s + viewAnglesOff);
+        if (std::isfinite(a[0]) && std::isfinite(a[1])) { g_viewAng[0] = a[0]; g_viewAng[1] = a[1]; g_viewAng[2] = a[2]; }
+    }
+    if (viewFovOff > 0 && Readable(s + viewFovOff, 4)) {
+        const float f = *(const float*)(s + viewFovOff);
+        if (std::isfinite(f) && f > 1.f && f < 179.f) g_viewFov = f;
+    }
+    g_viewPosAt = GetTickCount64();
+}
+static float ValueHook() {
+    CopyViewPos(g_viewSetup);
+    return g_userValue ? g_userValue() : 0.f;
+}
+static void ApplyHook(void* setup) {
+    if (g_userApply) g_userApply(setup);
+    CopyViewPos(setup);   // where the DemoTools2 camera put it
+}
+const LocalSlots& Locals() {
+    static LocalSlots L;
+    static bool done = false;
+    if (done) return L;
+    done = true;
+    const Text t = ClientText();
+    if (!t.start) return L;
+    auto rip = [](uint8_t* at, int disp) -> uint8_t* { return at + disp + 4 + *(int32_t*)(at + disp); };
+    // GetLocalPlayerController(slot) / GetLocalPlayerPawn(slot): slot -1 = the active one, then array[slot]
+    const char* getter = "83 F9 FF 75 ?? 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 ?? 48 8B 01 FF 90 ?? ?? ?? ?? 8B 08 48 63 C1 48 8D 0D ?? ?? ?? ?? 48 8B 04 C1";
+    // where the game makes a controller the local one: array[slot] = controller; controller->m_bIsLocalPlayerController = 1
+    if (uint8_t* p = FindPattern(t, "48 8D 0D ?? ?? ?? ?? ?? ?? 4C 89 ?? ?? 41 C6 86 ?? ?? ?? ?? 01")) {
+        L.controllers = (void**)rip(p, 3);
+        L.isLocal = *(int32_t*)(p + 16);
+    }
+    // the other getter (not the controllers) is the pawns
+    std::vector<int> bytes;
+    for (const char* q = getter; *q;) {
+        if (*q == ' ') { ++q; continue; }
+        if (*q == '?') { bytes.push_back(-1); q += 2; continue; }
+        bytes.push_back((int)std::strtol(q, (char**)&q, 16));
+    }
+    for (size_t i = 0; i + bytes.size() <= t.size; ++i) {
+        size_t k = 0;
+        while (k < bytes.size() && (bytes[k] < 0 || t.start[i + k] == bytes[k])) ++k;
+        if (k != bytes.size()) continue;
+        void** arr = (void**)rip(t.start + i, 34);
+        if (arr != L.controllers && !L.pawns) L.pawns = arr;
+    }
+    // IsHLTV(controller): controller->m_bIsLocalPlayerController ? g_bIsHLTV : controller->m_bIsHLTV
+    if (uint8_t* p = FindPattern(t, "80 B8 ?? ?? ?? ?? 00 74 09 0F B6 05 ?? ?? ?? ?? EB 07 0F B6 80")) {
+        L.hltv = rip(p, 12);
+        L.isHltv = *(int32_t*)(p + 21);
+        if (L.isLocal && *(int32_t*)(p + 2) != L.isLocal) Log("POV: two different 'local player' fields (0x%x / 0x%x)", (unsigned)L.isLocal, (unsigned)*(int32_t*)(p + 2));
+    }
+    Log("POV: local controllers %s, local pawns %s, GOTV flag %s, fields 0x%x / 0x%x", L.controllers ? "found" : "MISSING",
+        L.pawns ? "found" : "MISSING", L.hltv ? "found" : "MISSING", (unsigned)L.isLocal, (unsigned)L.isHltv);
+    return L;
+}
+
+bool HasModuleString(const char* module, const char* text) {
+    HMODULE m = GetModuleHandleA(module);
+    if (!m || !text || !*text) return false;
+    const uint8_t* base = (const uint8_t*)m;
+    const auto* dos = (const IMAGE_DOS_HEADER*)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    const auto* nt = (const IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    const size_t n = std::strlen(text) + 1;   // with its 0, so "mirv_pov" doesn't match "mirv_pov_radio_mode"
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        if (!(sec[i].Characteristics & IMAGE_SCN_MEM_READ) || (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        const uint8_t* p = base + sec[i].VirtualAddress;
+        const size_t size = sec[i].Misc.VirtualSize;
+        if (size < n || !Readable(p, size)) continue;
+        for (size_t k = 1; k + n <= size; ++k)
+            if (p[k] == (uint8_t)text[0] && p[k - 1] == 0 && std::memcmp(p + k, text, n) == 0) return true;
+    }
+    return false;
+}
+
+float ViewFov() { return g_viewPosAt && GetTickCount64() - g_viewPosAt <= 1000 ? g_viewFov : 0.f; }
+bool ViewPosition(float out[3], float angles[3]) {
+    if (!g_viewPosAt || GetTickCount64() - g_viewPosAt > 1000) return false;
+    out[0] = g_viewPos[0]; out[1] = g_viewPos[1]; out[2] = g_viewPos[2];
+    if (angles) { angles[0] = g_viewAng[0]; angles[1] = g_viewAng[1]; angles[2] = g_viewAng[2]; }
+    return true;
+}
+
 bool InstallViewHook(ViewValueFn value, ViewApplyFn apply) {
     static bool done = false;
     if (done) return true;
@@ -1049,12 +1174,31 @@ bool InstallViewHook(ViewValueFn value, ViewApplyFn apply) {
         Log("camera: view layout unexpected (origin +0x%x, angles +0x%x) - not hooking", (unsigned)viewOriginOff, (unsigned)viewAnglesOff);
         return false;
     }
-    // 1) lea rcx,[cvar]; call GetFloat   ->  mov rax, value; call rax            (12 bytes)
+    g_userValue = value;
+    g_userApply = apply;
+    // A small piece of code that remembers the view setup (rbx) before asking value(), so the camera position is
+    // known every frame (the Cinematics map and quick moves use it), also when the DemoTools2 camera is off.
+    uint8_t* thunk = (uint8_t*)VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!thunk) { Log("camera: couldn't allocate the view hook"); return false; }
+    {
+        void* slot = (void*)&g_viewSetup;
+        void* fn = (void*)&ValueHook;
+        uint8_t code[] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,    // mov rax, &g_viewSetup
+                          0x48, 0x89, 0x18,                      // mov [rax], rbx
+                          0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0,    // mov rax, ValueHook
+                          0xFF, 0xE0};                           // jmp rax
+        std::memcpy(code + 2, &slot, 8);
+        std::memcpy(code + 15, &fn, 8);
+        std::memcpy(thunk, code, sizeof(code));
+        FlushInstructionCache(GetCurrentProcess(), thunk, sizeof(code));
+    }
+    // 1) lea rcx,[cvar]; call GetFloat   ->  mov rax, thunk; call rax            (12 bytes)
     uint8_t a[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xD0};
-    std::memcpy(a + 2, &value, 8);
+    std::memcpy(a + 2, &thunk, 8);
     // 2) lea rdx; lea rcx; call Calc...  ->  mov rcx, rbx; mov rax, apply; call rax; nop x4   (19 bytes)
     uint8_t b[19] = {0x48, 0x89, 0xD9, 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xD0, 0x90, 0x90, 0x90, 0x90};
-    std::memcpy(b + 5, &apply, 8);
+    void* applyFn = (void*)&ApplyHook;
+    std::memcpy(b + 5, &applyFn, 8);
     if (!Patch(lea, a, sizeof(a)) || !Patch(leaAng, b, sizeof(b))) { Log("camera: couldn't write the view hook"); return false; }
     done = true;
     Log("camera: view hook installed (view origin +0x%x, angles +0x%x, fov +0x%x)", (unsigned)viewOriginOff, (unsigned)viewAnglesOff, (unsigned)viewFovOff);
@@ -1148,6 +1292,7 @@ uint8_t* Chunk(void* es, int c) {
     return chunk;
 }
 
+
 void* IdentityAt(int index) {
     if (index < 0 || index >= 0x8000) return nullptr;
     void* es = EntitySystem();
@@ -1181,6 +1326,16 @@ const char* DesignerName(void* entity) {
     void* id = Get<void*>(entity, O.ent_pEntity);
     if (!id) return nullptr;
     return Get<const char*>(id, O.identity_designerName);
+}
+
+// The game folder (...\game\csgo\), from where client.dll is.
+std::string GameFolder() {
+    char path[MAX_PATH] = {};
+    HMODULE m = GetModuleHandleA("client.dll");
+    if (!m || !GetModuleFileNameA(m, path, MAX_PATH)) return {};
+    std::string s = path;
+    for (int i = 0; i < 3; ++i) { size_t k = s.find_last_of("\\/"); if (k == std::string::npos) return {}; s.resize(k); }
+    return s + "\\";
 }
 
 uint32_t HandleOf(void* entity) {

@@ -7,6 +7,7 @@
 // OpenGL window shares nothing with that, and needs no input hacks: it simply gets the mouse when you click it.
 #include "render.h"
 #include "skins.h"
+#include "hotkeys.h"
 #include "ui.h"
 #include "util.h"
 
@@ -141,6 +142,7 @@ static DWORD WINAPI Thread(LPVOID) {
         bool down = OurProcess(fg) && (GetAsyncKeyState(Skins::settings.menuKey) & 0x8000);
         if (down && !keyWas) Show(!open);
         keyWas = down;
+        Hotkeys::Poll(OurProcess(fg) && fg != g_wnd);   // cinematics hotkeys, only while CS2 itself is in front
 
         if (!open || IsIconic(g_wnd)) { Sleep(30); continue; }
         if (g_newScale > 0) { Ui::ApplyTheme(g_newScale); g_newScale = 0; }

@@ -3,6 +3,10 @@
 // DemoTools2 - CS2 demo tools for HLAE: skins for chosen players, and calcs + a camera that follows them. Load it in HLAE:
 //   mirv_loadlibrary "C:\path\to\DemoTools2.dll"
 #include "calc.h"
+#include "campath.h"
+#include "pov.h"
+#include "record.h"
+#include "hotkeys.h"
 #include "game.h"
 #include "render.h"
 #include "skins.h"
@@ -49,17 +53,27 @@ static bool HookConfirmed(uintptr_t stage) {
 
 static uintptr_t hkFrameStage(void* self, uintptr_t stage, uintptr_t a3, uintptr_t a4) {
     if (!HookConfirmed(stage)) return g_oFrameStage(self, stage, a3, a4);
+    Pov::OnFrameStage((int)stage);   // also puts everything back by itself when switched off
+    const double t0 = NowMs();
     {
         Step step("camera set-up");
         Calc::OnGameThread();
     }
+    const double t1 = NowMs();
     if (!g_skinsOff) {
         Step step("applying skins (FrameStageNotify)");
         FirstRunBegin("frame-stage");
         Skins::OnFrameStage((int)stage);
         FirstRunEnd("frame-stage");
     }
-    return g_oFrameStage(self, stage, a3, a4);
+    const double t2 = NowMs();
+    SlowCheck("camera", t1 - t0);
+    SlowCheck("skins and the rest (all together)", t2 - t1);
+    PerfAdd("camera", t1 - t0);
+    PerfAdd("all DemoTools2 per-frame work", t2 - t1);
+    const uintptr_t r = g_oFrameStage(self, stage, a3, a4);
+    Pov::AfterFrameStage((int)stage);
+    return r;
 }
 
 // The FrameStageNotify body starts with a switch over the frame stages: the stage minus 3 (add -3 / sub 3 / lea -3),
@@ -183,6 +197,10 @@ static DWORD WINAPI Start(LPVOID) {
     {
         Step step("start-up: camera");
         Calc::Init();
+        Campath::Init();
+        Pov::Init();
+        Record::Init();
+        Hotkeys::Init();
     }
     if (CrashedLastTime("frame-stage")) {
         g_skinsOff = true;

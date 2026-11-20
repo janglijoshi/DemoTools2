@@ -45,4 +45,14 @@ struct RowOpts {
 };
 bool Row(const char* id, const char* left, bool selected, const RowOpts& o = {});
 bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0, 0));
+
+// Window layout pieces (2.0): sidebar navigation, page header, section titles, small tags and number tiles.
+enum Icon { Icon_Camera, Icon_Cinematics, Icon_Record, Icon_Skins, Icon_Status };
+void DrawIcon(ImDrawList* dl, int icon, ImVec2 center, float size, ImU32 col);
+// One sidebar entry: icon, label, a muted line under it; badge > 0 shows a small count on the right.
+bool NavItem(const char* id, int icon, const char* label, const char* sub, bool selected, int badge = 0, const ImVec4& badgeCol = ImVec4(0, 0, 0, 0));
+void PageHeader(const char* title, const char* sub, const char* tag = nullptr, const ImVec4& tagCol = ImVec4(0, 0, 0, 0));
+void Section(const char* title);   // bold title with a thin rule to the right edge
+void Tag(const char* text, const ImVec4& col);   // small rounded label on the current line
+void StatTile(const char* value, const char* label, const ImVec4& col, float width);
 }  // namespace Ui

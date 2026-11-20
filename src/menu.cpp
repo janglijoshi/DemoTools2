@@ -1,8 +1,18 @@
 // Copyright (c) 2026 janglijoshi. All rights reserved.
 // Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
-// The DemoTools2 window. Skins tab: pick a player, pick a gun / knife / gloves, pick the finish.
-// Camera tab: follow a player with one click, see every calc live, presets, and a dt2_ command line.
+// The DemoTools2 window: a sidebar with five pages.
+//   Camera      follow / attach the camera to a player, every calc live, presets, and a dt2_ command line
+//   Cinematics  campath sequences (built with the demo paused), path keys, quick moves, hotkeys, recording the path
+//   Record      every kill of one player from the playing demo, with motion blur, as MP4
+//   Skins       pick a player, pick a gun / knife / gloves / agent, pick the finish
+//   Status      what was found in this CS2 build
 #include "calc.h"
+#include "campath.h"
+#include "pov.h"
+#include "record.h"
+#include "hotkeys.h"
+#include <windows.h>
+#include <commdlg.h>
 #include "catalog.gen.h"
 #include "console.h"
 #include "extras.gen.h"
@@ -14,10 +24,14 @@
 #include <algorithm>
 #include <shellapi.h>
 #include <cstdarg>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <mutex>
+#include <vector>
 
 namespace Menu {
 enum Slot : int { SLOT_NONE = 0, SLOT_KNIFE = -1, SLOT_GLOVES = -2, SLOT_AGENT = -3 };   // > 0: a gun's definition index
@@ -31,8 +45,7 @@ static int g_side = Side_Both;        // which loadout the middle and right colu
 static int g_stickerSlot = 0;
 static char g_extraSearch[64] = {};
 static ULONGLONG g_saveAt = 0;
-static int g_openTab = -1;
-static int g_gunTab = 0;            // gun editor: 0 finish, 1 stickers, 2 charm          // switch to this main tab on the next frame (-1: leave it)
+static int g_gunTab = 0;            // gun editor: 0 finish, 1 stickers, 2 charm
 
 static const CatWeapon* WeaponByDef(uint16_t def) {
     for (int i = 0; i < kNumWeapons; ++i) if (kWeapons[i].def == def) return &kWeapons[i];
@@ -846,7 +859,7 @@ static void FollowPanel() {
 }
 
 static void CameraPanel() {
-    Ui::Heading("Camera (WIP)");
+    Ui::Heading("Camera output");
     Calc::CamState c;
     {
         std::lock_guard<std::mutex> g(Calc::lock);
@@ -925,7 +938,7 @@ static void CalcsPanel() {
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, Ui::S(90));
         ImGui::TableSetupColumn("Definition");
         ImGui::TableSetupColumn("Value now");
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, Ui::S(22));
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, Ui::S(30));
         ImGui::TableHeadersRow();
         for (auto& p : list) {
             ImGui::TableNextRow();
@@ -943,6 +956,8 @@ static void CalcsPanel() {
         ImGui::EndTable();
     }
     ImGui::EndChild();
+    static bool refocus = false;
+    if (refocus) { ImGui::SetKeyboardFocusHere(); refocus = false; }
     ImGui::SetNextItemWidth(-Ui::S(130));
     bool enter = ImGui::InputTextWithHint("##cmd", "dt2_calc / dt2_cam / dt2_preset command", g_cmdLine, sizeof(g_cmdLine),
                                           ImGuiInputTextFlags_EnterReturnsTrue);
@@ -952,7 +967,7 @@ static void CalcsPanel() {
         if (line.rfind("dt2_", 0) != 0) line = "dt2_calc " + line;
         Run(line);
         g_cmdLine[0] = 0;
-        ImGui::SetKeyboardFocusHere(-1);
+        refocus = enter;   // Enter: keep typing the next command (SetKeyboardFocusHere(-1) here focused the Run button)
     }
     ImGui::SameLine();
     if (ImGui::Button("Help", ImVec2(-1, 0))) Run("dt2_calc");
@@ -964,10 +979,6 @@ static void CalcsPanel() {
 }
 
 static void CameraTab() {
-    ImGui::PushStyleColor(ImGuiCol_Text, Ui::kWarn);
-    ImGui::TextWrapped("Work in progress: the camera tools are still being built and may change or not work in every demo.");
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
     float h = ImGui::GetContentRegionAvail().y;
     ImGui::BeginChild("##camleft", ImVec2(std::clamp(ImGui::GetContentRegionAvail().x * 0.38f, Ui::S(340), Ui::S(440)), h), ImGuiChildFlags_Borders);
     Ui::SmoothScroll();
@@ -985,17 +996,1012 @@ static void CameraTab() {
     ImGui::EndChild();
 }
 
+static void Section(const char* text) { Ui::Section(text); }
+
+// ------------------------------------------------------------------ Cinematics tab
+// Campaths: keyframes the camera glides through, timed to the demo; quick orbit / dolly moves; HLAE campath files;
+// and HLAE's mirv_pov (POV HUD) switches.
+static char g_cpName[64] = "my_campath";
+static std::string g_cpMsg;
+static ImVec4 g_cpMsgCol;
+static float g_cpDuration = 0;
+static float g_orbRadius = 250, g_orbHeight = 60, g_orbDegrees = 180, g_orbSeconds = 6;
+static int g_orbKeys = 9;
+static float g_dollyDist = 300, g_dollySeconds = 4;
+static bool g_cpDragging = false;
+static void CpNote(const std::string& m, const ImVec4& c) { g_cpMsg = m; g_cpMsgCol = c; }
+
+static void CpLabel(const char* t) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(t);
+    ImGui::SameLine(Ui::S(120));
+    ImGui::SetNextItemWidth(-1);
+}
+
+static void GoToTick(int tick) {
+    if (tick < 0) { CpNote("No demo tick known for that key (add keys while the demo plays).", Ui::kWarn); return; }
+    char b[64];
+    std::snprintf(b, sizeof b, "demo_gototick %d", std::max(0, tick));
+    Campath::QueueCommand(b);
+}
+
+
+// Sequence: points made with the demo paused; Generate times them from the start tick.
+static int g_cpMode = 0;   // 0 sequence (paused), 1 path keys
+static void SequenceLeft() {
+    int n, total, start, holdTicks;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        n = (int)Campath::seq.points.size();
+        total = Campath::SeqTotalTicks();
+        start = Campath::seq.startTick;
+        holdTicks = Campath::seq.holdTicks;
+    }
+    (void)holdTicks;
+    Hint("Pause the demo where the shot starts. Fly the camera to each spot and press Add point - the demo stays paused. "
+         "Then Generate: DemoTools2 works out how many ticks the camera needs from each point to the next and makes the real path, "
+         "starting at the paused tick.");
+    ImGui::Spacing();
+    ImGui::AlignTextToFramePadding();
+    if (start >= 0) ImGui::Text("%d points - %d ticks (%.2f s) - starts at tick %d", n, total, total / 64.0, start);
+    else ImGui::Text("%d points", n);
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;   // two even columns
+    if (Ui::PrimaryButton("Add point here", ImVec2(half, 0))) {
+        std::string why;
+        if (Campath::SeqAdd(&why)) CpNote("Point added. Move the camera to the next spot and add the next one.", Ui::kGood);
+        else CpNote(why, Ui::kWarn);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The view you see now (HLAE's mirv_input camera or the demo's free camera).\n"
+                          "It goes after the selected point. The first point also sets the start tick.\nConsole / bind: dt2_campath seq add");
+    ImGui::SameLine();
+    if (Ui::PrimaryButton("Generate", ImVec2(-1, 0))) {
+        std::string why;
+        if (Campath::SeqGenerate(&why)) {
+            g_cpDuration = 0;
+            CpNote("Path generated and switched on. Unpause (or Go to start) to watch it; record with mirv_streams.", Ui::kGood);
+        } else CpNote(why, Ui::kWarn);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Makes the real path from the points, timed from the start tick. Console: dt2_campath seq generate");
+    if (ImGui::Button("Generate + preview", ImVec2(half, 0))) {
+        std::string why;
+        if (Campath::SeqGenerate(&why)) { Campath::Preview(); g_cpDuration = 0; CpNote("Generated - previewing in real time.", Ui::kGood); }
+        else CpNote(why, Ui::kWarn);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Start at this tick", ImVec2(-1, 0))) {
+        std::string why;
+        if (Campath::SeqUseCurrentStart(&why)) CpNote("The path will start at the tick the demo is on now.", Ui::kGood);
+        else CpNote(why, Ui::kWarn);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normally the start is the tick of the first point. Use this to start somewhere else.");
+    if (ImGui::Button("Go to start##seq", ImVec2(half, 0))) GoToTick(start);
+    ImGui::SameLine();
+    if (ImGui::Button("Edit path##seq", ImVec2(-1, 0))) { Campath::SeqFromPath(); CpNote("The current path is back in the sequence (its timing kept as ticks).", Ui::kGood); }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Turns the current (generated or loaded) path back into points to edit.");
+    if (ImGui::Button("Clear points", ImVec2(half, 0))) { Campath::SeqClear(); CpNote("Points cleared.", Ui::kMuted); }
+
+    Section("Auto timing");
+    Hint("Used for every point whose Ticks is 0 (auto). The slower of the move and the turn decides.");
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        ImGui::PushItemWidth(-Ui::S(130));
+        ImGui::SliderFloat("Camera speed", &Campath::seq.speed, 20, 2000, "%.0f units/s");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A running player moves 250 units a second.");
+        ImGui::SliderFloat("Turn speed", &Campath::seq.turn, 10, 720, "%.0f deg/s");
+        ImGui::SliderInt("Shortest move", &Campath::seq.minTicks, 1, 640, "%d ticks");
+        ImGui::SliderInt("Hold before a cut", &Campath::seq.holdTicks, 1, 1280, "%d ticks");
+        ImGui::PopItemWidth();
+    }
+}
+
+static void PointEditor() {
+    Campath::Point p;
+    int sel, count, autoTicks = 0;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        count = (int)Campath::seq.points.size();
+        sel = Campath::seq.selected;
+        if (sel >= count) sel = Campath::seq.selected = count - 1;
+        if (sel >= 0) {
+            p = Campath::seq.points[sel];
+            Campath::Point a = p;
+            a.ticks = 0;
+            std::swap(Campath::seq.points[sel], a);
+            autoTicks = Campath::SeqTicks(sel);   // what auto would give
+            std::swap(Campath::seq.points[sel], a);
+        }
+    }
+    if (sel < 0) { Hint("Select a point (in the list or on the map) to edit it."); return; }
+    ImGui::PushFont(Ui::bold, 0.f);
+    ImGui::Text("Point %d of %d", sel + 1, count);
+    ImGui::PopFont();
+    bool edit = false;
+    const bool last = sel + 1 >= count;
+    ImGui::PushItemWidth(-Ui::S(120));
+    if (!last) {
+        int t = p.ticks;
+        char fmt[48];
+        std::snprintf(fmt, sizeof fmt, t > 0 ? "%%d ticks" : "auto (%d ticks)", autoTicks);
+        ImGui::SetNextItemWidth(-Ui::S(170));   // room for the label and the "auto" button
+        if (ImGui::DragInt(p.cut ? "Hold for" : "Ticks to next", &t, 1.f, 0, 64 * 120, fmt)) { p.ticks = std::max(0, t); edit = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How many demo ticks (64 a second) the camera takes to reach the next point.\n0 = auto (Auto timing).");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("auto")) { p.ticks = 0; edit = true; }
+        edit |= Ui::Toggle("Cut to the next point (new shot)", &p.cut);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The camera holds this view for the ticks above, then jumps to the next point.");
+    } else ImGui::TextDisabled("Last point: the path ends here.");
+    edit |= ImGui::DragFloat3("Position", p.pos, 1.f, -16384.f, 16384.f, "%.1f");
+    edit |= ImGui::DragFloat3("Pitch/Yaw/Roll", p.ang, 0.2f, -360.f, 360.f, "%.1f");
+    edit |= ImGui::SliderFloat("Field of view", &p.fov, 10.f, 140.f, "%.1f deg");
+    ImGui::PopItemWidth();
+    if (edit) {
+        p.ang[0] = std::clamp(p.ang[0], -89.f, 89.f);
+        std::lock_guard<std::mutex> g(Campath::lock);
+        if (sel < (int)Campath::seq.points.size()) Campath::seq.points[sel] = p;
+    }
+    if (ImGui::Button("Set to current view##pt", ImVec2(Ui::S(160), 0))) {
+        if (Campath::SeqSetToView(sel)) CpNote("Point moved to the current view.", Ui::kGood);
+        else CpNote("The camera isn't known yet - play the demo for a moment.", Ui::kWarn);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Up", ImVec2(Ui::S(46), 0))) Campath::SeqMove(sel, -1);
+    ImGui::SameLine();
+    if (ImGui::Button("Down", ImVec2(Ui::S(56), 0))) Campath::SeqMove(sel, +1);
+    ImGui::SameLine();
+    if (ImGui::Button("Delete##pt", ImVec2(-1, 0))) Campath::SeqRemove(sel);
+}
+
+static void PointList() {
+    std::vector<std::pair<int, bool>> rows;   // ticks to next, cut
+    std::vector<bool> autoT;
+    int sel, start;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        for (int i = 0; i < (int)Campath::seq.points.size(); ++i) {
+            rows.push_back({Campath::SeqTicks(i), Campath::seq.points[i].cut});
+            autoT.push_back(Campath::seq.points[i].ticks <= 0);
+        }
+        sel = Campath::seq.selected;
+        start = Campath::seq.startTick;
+    }
+    int at = start;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        char left[96], right[64], id[24];
+        if (start >= 0) std::snprintf(left, sizeof left, "%2u   tick %d", (unsigned)i + 1, at);
+        else std::snprintf(left, sizeof left, "%2u", (unsigned)i + 1);
+        if (i + 1 < rows.size())
+            std::snprintf(right, sizeof right, "%s %d ticks%s", rows[i].second ? "hold" : "->", rows[i].first, autoT[i] ? " (auto)" : "");
+        else std::snprintf(right, sizeof right, "end");
+        std::snprintf(id, sizeof id, "##cpp%u", (unsigned)i);
+        Ui::RowOpts o;
+        o.right = right;
+        o.rightCol = Ui::Col(Ui::kMuted);
+        if (rows[i].second && i + 1 < rows.size()) { o.chip = "CUT"; o.chipCol = Ui::Col(Ui::kBad); }
+        if (Ui::Row(id, left, (int)i == sel, o)) {
+            std::lock_guard<std::mutex> g(Campath::lock);
+            Campath::seq.selected = (int)i;
+        }
+        at += rows[i].first;
+    }
+}
+
+static void HotkeysSection() {
+    Section("Hotkeys");
+    Hint("They work while CS2 is in front (the menu can stay closed). Click a key to change it: press the new key "
+         "(with Ctrl / Shift / Alt if you like), Esc to keep it. Unbind removes it.");
+    if (ImGui::SmallButton("Unbind all")) for (int i = 0; i < Hotkeys::Count; ++i) Hotkeys::Set((Hotkeys::Action)i, Hotkeys::Binding{});
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Default keys")) Hotkeys::ResetDefaults();
+    Hotkeys::Action capturing = Hotkeys::Count;
+    const bool cap = Hotkeys::Capturing(capturing);
+    if (cap) Hotkeys::Capture();
+    for (int i = 0; i < Hotkeys::Count; ++i) {
+        const Hotkeys::Action a = (Hotkeys::Action)i;
+        ImGui::PushID(i);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(Hotkeys::Name(a));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Hotkeys::Help(a));
+        ImGui::SameLine(Ui::S(170));
+        const bool mine = cap && capturing == a;
+        const Hotkeys::Binding b = Hotkeys::Get(a);
+        const std::string label = mine ? std::string("Press a key...") : Hotkeys::KeyText(b);
+        if (mine) ImGui::PushStyleColor(ImGuiCol_Button, Ui::Col(Ui::kAccent, 0.35f));
+        if (ImGui::Button(label.c_str(), ImVec2(-Ui::S(78), 0)) && !cap) Hotkeys::BeginCapture(a);
+        if (mine) ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!b.vk || cap);
+        if (ImGui::Button("Unbind", ImVec2(-1, 0))) Hotkeys::Set(a, Hotkeys::Binding{});
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && b.vk) ImGui::SetTooltip("Remove %s from %s", label.c_str(), Hotkeys::Name(a));
+        ImGui::PopID();
+    }
+}
+
+static void VideoSettings(bool killClips);
+
+// Record the path (same HLAE recording and video settings as the Record tab)
+static void CinematicRecordSection() {
+    Section("Record the path");
+    const Record::Progress pr = Record::Status();
+    double t0 = 0, t1 = 0;
+    size_t n;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        n = Campath::keys.size();
+        if (n >= 2) { t0 = Campath::keys.front().t; t1 = Campath::keys.back().t; }
+    }
+    const int tick0 = n >= 2 ? Campath::TickFor(t0) : -1, tick1 = n >= 2 ? Campath::TickFor(t1) : -1;
+    if (pr.running) {
+        Ui::StatusPill("Recording", Ui::kBad);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(pr.state.c_str());
+        if (Ui::PrimaryButton("Stop recording", ImVec2(Ui::S(150), 0))) Record::Stop();
+        Hint("Leave CS2 alone while it records.");
+    } else {
+        const bool playing = Skins::demoPlaying, hlae = Record::HlaeLoaded();
+        const bool ready = n >= 2 && tick0 >= 0 && tick1 > tick0 && playing && hlae;
+        ImGui::BeginDisabled(!ready);
+        if (Ui::PrimaryButton("Record path", ImVec2(Ui::S(150), 0))) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char name[128];
+            std::snprintf(name, sizeof name, "cinematic_%s_%02d%02d%02d", g_cpName[0] ? g_cpName : "path", st.wHour, st.wMinute, st.wSecond);
+            {
+                std::lock_guard<std::mutex> g(Campath::lock);
+                Campath::set.enabled = true;   // the path has to drive the camera while it records
+            }
+            Campath::StopPreview();
+            Record::StartCinematic(tick0, tick1, name);
+            CpNote("Recording the path - it goes to the start, records to the end, then the MP4 is finished in the background.", Ui::kGood);
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        if (n >= 2) ImGui::TextDisabled("%.1f s, ticks %d - %d", t1 - t0, tick0, tick1);
+        if (n < 2) Hint("Make a path first (a sequence and Generate, or path keys).");
+        else if (tick0 < 0) Hint("The path's demo ticks aren't known - add or generate it while the demo plays.");
+        else if (!playing) Hint("Play the demo (pausing is fine) to record.");
+        else if (!hlae) Hint("Start CS2 through HLAE to record.");
+        if (!pr.state.empty()) Hint("Last run: %s", pr.state.c_str());
+    }
+    if (!pr.post.empty()) Hint("%s", pr.post.c_str());
+    if (!pr.done.empty()) ImGui::TextDisabled("saved: %s", pr.done.back().c_str());
+    if (ImGui::TreeNode("Video settings (shared with the Record tab)")) {
+        VideoSettings(false);
+        ImGui::TreePop();
+    }
+    if (ImGui::Button("Open folder##cprec", ImVec2(Ui::S(110), 0))) {
+        const std::string out = Record::OutDir();
+        CreateDirectoryA((DllFolder() + "recordings").c_str(), nullptr);
+        CreateDirectoryA(out.c_str(), nullptr);
+        ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", Record::FfmpegPath().empty() ? "ffmpeg not found (Record tab)" : "ffmpeg ok");
+}
+
+static void CinematicsLeft() {
+    const Campath::Live live = Campath::Status();
+    size_t n;
+    double dur;
+    bool enabled;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        n = Campath::keys.size();
+        dur = n >= 2 ? Campath::keys.back().t - Campath::keys.front().t : 0;
+        enabled = Campath::set.enabled;
+    }
+    {
+        static const char* kModes[] = {"Sequence (demo paused)", "Path keys"};
+        ImGui::SetNextItemWidth(-1);
+        Ui::Segmented("##cp_mode", kModes, 2, &g_cpMode);
+        ImGui::Spacing();
+    }
+    // status
+    {
+        const char* st = live.previewing ? "Previewing" : live.playing ? "Playing" : enabled ? "On - waiting" : "Off";
+        const ImVec4 col = live.playing ? Ui::kGood : enabled ? Ui::kAccent : Ui::kMuted;
+        Ui::StatusPill(st, col);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%u keys, %.2f s", (unsigned)n, dur);
+        if (!live.note.empty()) Hint("%s", live.note.c_str());
+    }
+    ImGui::Spacing();
+    if (g_cpMode == 0) {
+        SequenceLeft();
+        if (ImGui::Button(live.previewing ? "Stop preview" : "Preview path", ImVec2(Ui::S(150), 0))) {
+            if (live.previewing) Campath::StopPreview(); else Campath::Preview();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Undo generate", ImVec2(-1, 0))) { if (!Campath::Undo()) CpNote("Nothing to undo.", Ui::kMuted); }
+    }
+    if (g_cpMode == 1 && Ui::PrimaryButton("Add key here", ImVec2(Ui::S(150), 0))) {
+        std::string why;
+        if (Campath::AddKeyHere(&why)) CpNote("Key added at the current view and demo time.", Ui::kGood);
+        else CpNote(why, Ui::kWarn);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Takes the view you see now (HLAE's mirv_input camera, the demo's free camera or any other) at this\n"
+                          "moment of the demo. Move the demo on, move the camera, add the next key.\n"
+                          "Console / bind: dt2_campath add");
+    if (g_cpMode == 1) {
+        ImGui::SameLine();
+        if (live.previewing) { if (ImGui::Button("Stop", ImVec2(Ui::S(90), 0))) Campath::StopPreview(); }
+        else if (ImGui::Button("Preview", ImVec2(Ui::S(90), 0))) Campath::Preview();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Flies the path once in real time, even with the demo paused.");
+        ImGui::SameLine();
+        if (ImGui::Button("Undo", ImVec2(Ui::S(70), 0))) { if (!Campath::Undo()) CpNote("Nothing to undo.", Ui::kMuted); }
+    }
+    if (!g_cpMsg.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, g_cpMsgCol);
+        ImGui::TextWrapped("%s", g_cpMsg.c_str());
+        ImGui::PopStyleColor();
+    }
+
+    Section("Playback");
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        Ui::Toggle("Play the path in the demo", &Campath::set.enabled);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("While the demo is inside the path's time, the path is the camera.\nRecord with HLAE's mirv_streams as usual.");
+        Ui::Toggle("Hold the first / last view outside the path", &Campath::set.hold);
+        Ui::Toggle("Ease in and out (gentle start and stop)", &Campath::set.easeEnds);
+        Ui::Toggle("Hide the HUD while it plays", &Campath::set.hideHud);
+        Ui::Toggle("Hide the first-person gun while it plays", &Campath::set.hideViewmodel);
+    }
+
+    CinematicRecordSection();
+
+    HotkeysSection();
+
+    Section("Smoothness");
+    {
+        static const char* kI[] = {"Smooth", "Linear"};
+        std::lock_guard<std::mutex> g(Campath::lock);
+        CpLabel("Position");
+        Ui::Segmented("##cp_pi", kI, 2, &Campath::set.posInterp);
+        CpLabel("Angles");
+        Ui::Segmented("##cp_ai", kI, 2, &Campath::set.angInterp);
+        CpLabel("Field of view");
+        Ui::Segmented("##cp_fi", kI, 2, &Campath::set.fovInterp);
+    }
+
+    if (g_cpMode == 1) {
+    Section("Timing");
+    {
+        if (g_cpDuration <= 0 && dur > 0) g_cpDuration = (float)dur;
+        CpLabel("Length");
+        ImGui::SetNextItemWidth(-Ui::S(70));
+        ImGui::DragFloat("##cp_dur", &g_cpDuration, 0.05f, 0.1f, 600.f, "%.2f s");
+        ImGui::SameLine();
+        if (ImGui::Button("Set", ImVec2(-1, 0))) { Campath::SetDuration(g_cpDuration); CpNote("Path stretched to the new length.", Ui::kGood); }
+        if (ImGui::Button("Even speed", ImVec2(Ui::S(110), 0))) { Campath::EvenSpeed(); CpNote("Keys re-timed: the camera now moves at an even speed.", Ui::kGood); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keeps the first and last key's time and moves the others so the camera\ntravels at the same speed the whole way (no rushing or crawling between keys).");
+        ImGui::SameLine();
+        if (ImGui::Button("Start here", ImVec2(Ui::S(100), 0))) { Campath::StartNow(); CpNote("The whole path now starts at the current demo moment.", Ui::kGood); }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Moves the whole path (all keys) so it starts at the demo moment you are at now.");
+        ImGui::SameLine();
+        if (ImGui::Button("Go to start", ImVec2(-1, 0))) {
+            double t0 = 0;
+            { std::lock_guard<std::mutex> g(Campath::lock); if (!Campath::keys.empty()) t0 = Campath::keys.front().t; }
+            const int tick = Campath::TickFor(t0);
+            GoToTick(tick < 0 ? -1 : tick - 64);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Jumps the demo to one second before the path starts.");
+    }
+
+    Section("Aim");
+    {
+        static const char* kAim[] = {"Keyframes", "Look at a player"};
+        std::lock_guard<std::mutex> g(Campath::lock);
+        Ui::Segmented("##cp_aim", kAim, 2, &Campath::set.aim);
+        if (Campath::set.aim == 1) {
+            std::string preview = "Choose a player";
+            for (auto& p : Skins::players) if (p.xuid == Campath::set.aimXuid) preview = p.name;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##cp_aimp", preview.c_str())) {
+                Ui::SmoothScroll();
+                for (auto& p : Skins::players) {
+                    char label[200];
+                    std::snprintf(label, sizeof(label), "%s %s##%llu", p.team == 2 ? "T " : p.team == 3 ? "CT" : "  ", p.name.c_str(), (unsigned long long)p.xuid);
+                    if (ImGui::Selectable(label, Campath::set.aimXuid == p.xuid)) Campath::set.aimXuid = p.xuid;
+                }
+                ImGui::EndCombo();
+            }
+            static const char* kPart[] = {"Eyes", "Chest", "Feet"};
+            Ui::Segmented("##cp_part", kPart, 3, &Campath::set.aimPart);
+            Hint("The path moves the camera; it always turns to face this player (roll and field of view still come from the keys).");
+        }
+    }
+
+    Section("Quick moves");
+    Hint("Each one replaces the path with a ready-made move that starts now, from the current view. Undo brings the old path back.");
+    ImGui::PushItemWidth(-Ui::S(110));
+    ImGui::SliderFloat("Radius", &g_orbRadius, 30, 1500, "%.0f units");
+    ImGui::SliderFloat("Height", &g_orbHeight, -300, 600, "%.0f units");
+    ImGui::SliderFloat("Turn", &g_orbDegrees, -720, 720, "%.0f deg");
+    ImGui::SliderFloat("Time##orb", &g_orbSeconds, 0.5f, 60, "%.1f s");
+    ImGui::SliderInt("Keys", &g_orbKeys, 3, 49);
+    ImGui::PopItemWidth();
+    if (ImGui::Button("Orbit what I look at", ImVec2(-1, 0))) {
+        float pos[3], ang[3];
+        if (!Game::ViewPosition(pos, ang)) CpNote("The camera isn't known yet - play the demo for a moment.", Ui::kWarn);
+        else {
+            const float p = ang[0] * 3.14159265f / 180.f, y = ang[1] * 3.14159265f / 180.f;
+            const float c[3] = {pos[0] + std::cos(p) * std::cos(y) * g_orbRadius, pos[1] + std::cos(p) * std::sin(y) * g_orbRadius,
+                                pos[2] - std::sin(p) * g_orbRadius};
+            Campath::Orbit(c, g_orbRadius, g_orbHeight, g_orbDegrees, g_orbSeconds, g_orbKeys);
+            CpNote("Orbit made around the spot the camera looked at (Radius units ahead). Turn on \"Play the path\" or Preview.", Ui::kGood);
+        }
+    }
+    ImGui::PushItemWidth(-Ui::S(110));
+    ImGui::SliderFloat("Distance", &g_dollyDist, -2000, 2000, "%.0f units");
+    ImGui::SliderFloat("Time##dolly", &g_dollySeconds, 0.5f, 60, "%.1f s");
+    ImGui::PopItemWidth();
+    if (ImGui::Button("Dolly straight ahead", ImVec2(-1, 0))) {
+        float pos[3];
+        if (!Game::ViewPosition(pos)) CpNote("The camera isn't known yet - play the demo for a moment.", Ui::kWarn);
+        else { Campath::Dolly(g_dollyDist, g_dollySeconds); CpNote("Dolly made (negative distance moves backwards).", Ui::kGood); }
+    }
+    }   // path mode
+
+    Section("Save / load");
+    ImGui::SetNextItemWidth(-Ui::S(80));
+    ImGui::InputText("##cp_name", g_cpName, sizeof g_cpName);
+    ImGui::SameLine();
+    if (ImGui::Button("Save", ImVec2(-1, 0))) {
+        std::string why;
+        if (Campath::Save(g_cpName, &why)) CpNote(std::string("Saved as ") + g_cpName + ".xml", Ui::kGood);
+        else CpNote(why, Ui::kWarn);
+    }
+    {
+        const auto names = Campath::SavedNames();
+        if (names.empty()) Hint("No saved campaths yet. Files go to %s (HLAE campath XML, so mirv_campath load works on them too, and HLAE's files load here).",
+                                Campath::Folder().c_str());
+        for (const std::string& nm : names) {
+            ImGui::PushID(nm.c_str());
+            if (ImGui::Button("Load", ImVec2(Ui::S(60), 0))) {
+                std::string why;
+                if (Campath::Load(nm, &why)) { CpNote("Loaded " + nm + ".", Ui::kGood); std::snprintf(g_cpName, sizeof g_cpName, "%s", nm.c_str()); g_cpDuration = 0; }
+                else CpNote(why, Ui::kWarn);
+            }
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(nm.c_str());
+            ImGui::PopID();
+        }
+        if (ImGui::Button("Open folder", ImVec2(Ui::S(110), 0))) {
+            CreateDirectoryA(Campath::Folder().c_str(), nullptr);
+            ShellExecuteA(nullptr, "open", Campath::Folder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+    }
+
+    Section("POV HUD (DemoTools2, test)");
+    {
+        bool on = Pov::Mode() != 0;
+        if (Ui::Toggle("POV HUD", &on)) Pov::SetMode(on ? 1 : 0);
+        Hint("%s", Pov::Status().c_str());
+        Hint("Shows the watched player's own HUD on a GOTV demo, as in their POV demo - DemoTools2's own version, no special "
+             "HLAE needed. Watch a player in first person (not free / chase camera). Test stage: tell us what works. Console: dt2_pov 1|0");
+    }
+
+    Section("POV HUD (HLAE mirv_pov)");
+    if (!Campath::PovAvailable()) {
+        Hint("Only for HLAE builds that have mirv_pov; the loaded HLAE doesn't. DemoTools2's own POV HUD (above) doesn't need it.");
+    } else {
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> g(Campath::lock);
+            changed |= Ui::Toggle("POV HUD (mirv_pov)", &Campath::pov.on);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("HLAE's POV HUD on a GOTV demo: the watched player's own HUD, radar, kill feed and prompts,\n"
+                                  "as if it were their POV demo. Works with DemoTools2's skins and camera.");
+            ImGui::BeginDisabled(!Campath::pov.on);
+            changed |= Ui::Toggle("Scoreboard sync (mirv_pov_scoreboard)", &Campath::pov.scoreboard);
+            changed |= Ui::Toggle("Buy menu (mirv_pov_buymenu)", &Campath::pov.buymenu);
+            ImGui::EndDisabled();
+        }
+        if (changed) { Campath::ApplyPov(); CpNote("Sent to HLAE - its console shows the result.", Ui::kGood); }
+        Hint("While a campath plays with \"Hide the HUD\" on, the POV HUD is hidden too and comes back after.");
+    }
+}
+
+// Top-down view of the path: line, keys (click to select), and where the camera is now.
+static void PathMap(float height, bool sequence) {
+    std::vector<float> pts;
+    if (sequence) Campath::SampleSequence(240, pts);
+    else Campath::Sample(240, pts);
+    std::vector<Campath::Key> ks;
+    int sel;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        if (sequence) {
+            for (const Campath::Point& p : Campath::seq.points) {
+                Campath::Key k;
+                std::memcpy(k.pos, p.pos, sizeof k.pos);
+                std::memcpy(k.ang, p.ang, sizeof k.ang);
+                k.cut = p.cut;
+                ks.push_back(k);
+            }
+            sel = Campath::seq.selected;
+        } else {
+            ks = Campath::keys;
+            sel = Campath::selected;
+        }
+    }
+    const Campath::Live live = Campath::Status();
+    ImGui::BeginChild("##cp_map", ImVec2(0, height), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 o = ImGui::GetCursorScreenPos(), sz = ImGui::GetContentRegionAvail();
+    if (ks.empty()) {
+        Hint(sequence ? "Top-down view of the sequence. Add points and the move shows here." : "Top-down view of the path. Add keys and the path shows here.");
+        ImGui::EndChild();
+        return;
+    }
+    float lo[2] = {1e9f, 1e9f}, hi[2] = {-1e9f, -1e9f};
+    auto grow = [&](float x, float y) { lo[0] = std::min(lo[0], x); lo[1] = std::min(lo[1], y); hi[0] = std::max(hi[0], x); hi[1] = std::max(hi[1], y); };
+    for (size_t i = 0; i + 2 < pts.size(); i += 3) grow(pts[i], pts[i + 1]);
+    for (auto& k : ks) grow(k.pos[0], k.pos[1]);
+    if (live.camKnown) grow(live.camPos[0], live.camPos[1]);
+    const float span = std::max({hi[0] - lo[0], hi[1] - lo[1], 200.f}) * 1.15f;
+    const float cx = (lo[0] + hi[0]) * 0.5f, cy = (lo[1] + hi[1]) * 0.5f;
+    const float scale = std::min(sz.x, sz.y) / span;
+    auto toScreen = [&](float x, float y) { return ImVec2(o.x + sz.x * 0.5f + (x - cx) * scale, o.y + sz.y * 0.5f - (y - cy) * scale); };
+    // a light grid every 256 units (CS2 maps are built on it)
+    const ImU32 grid = Ui::Col(Ui::kMuted, 0.10f);
+    for (float gx = std::floor((cx - span) / 256.f) * 256.f; gx < cx + span; gx += 256.f) {
+        const ImVec2 a = toScreen(gx, cy - span), b = toScreen(gx, cy + span);
+        dl->AddLine(ImVec2(a.x, o.y), ImVec2(b.x, o.y + sz.y), grid);
+    }
+    for (float gy = std::floor((cy - span) / 256.f) * 256.f; gy < cy + span; gy += 256.f) {
+        const ImVec2 a = toScreen(cx - span, gy);
+        dl->AddLine(ImVec2(o.x, a.y), ImVec2(o.x + sz.x, a.y), grid);
+    }
+    for (size_t i = 3; i + 2 < pts.size(); i += 3)
+        dl->AddLine(toScreen(pts[i - 3], pts[i - 2]), toScreen(pts[i], pts[i + 1]), Ui::Col(Ui::kAccent), Ui::S(2));
+    for (size_t i = 0; i < ks.size(); ++i) {
+        const ImVec2 p = toScreen(ks[i].pos[0], ks[i].pos[1]);
+        const float yaw = ks[i].ang[1] * 3.14159265f / 180.f;
+        dl->AddLine(p, ImVec2(p.x + std::cos(yaw) * Ui::S(14), p.y - std::sin(yaw) * Ui::S(14)), Ui::Col(Ui::kText, 0.6f), Ui::S(1.5f));
+        const bool s = (int)i == sel;
+        dl->AddCircleFilled(p, Ui::S(s ? 6.f : 4.5f), s ? Ui::Col(Ui::kWarn) : Ui::Col(Ui::kText));
+        if (ImGui::IsMouseClicked(0) && ImGui::IsWindowHovered()) {
+            const ImVec2 m = ImGui::GetMousePos();
+            if ((m.x - p.x) * (m.x - p.x) + (m.y - p.y) * (m.y - p.y) < Ui::S(9) * Ui::S(9)) {
+                std::lock_guard<std::mutex> g(Campath::lock);
+                if (sequence) Campath::seq.selected = (int)i;
+                else Campath::selected = (int)i;
+            }
+        }
+        if (ks[i].cut) {   // a cut: a small bar across the point
+            dl->AddLine(ImVec2(p.x - Ui::S(7), p.y + Ui::S(8)), ImVec2(p.x + Ui::S(7), p.y + Ui::S(8)), Ui::Col(Ui::kBad), Ui::S(2.5f));
+        }
+    }
+    if (live.camKnown) {
+        const ImVec2 c = toScreen(live.camPos[0], live.camPos[1]);
+        dl->AddCircle(c, Ui::S(7), Ui::Col(live.playing ? Ui::kGood : Ui::kMuted), 0, Ui::S(2));
+    }
+    ImGui::SetCursorScreenPos(ImVec2(o.x + Ui::S(6), o.y + sz.y - ImGui::GetTextLineHeight() - Ui::S(4)));
+    ImGui::TextDisabled(sequence ? "top-down, grid 256 units - dots: points (click one), red bar: cut, ring: camera now"
+                                 : "top-down, grid 256 units - dots: keys (click one), red bar: cut, ring: camera now");
+    ImGui::EndChild();
+}
+
+static void KeyEditor() {
+    Campath::Key k;
+    int sel, count;
+    double t0 = 0;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        sel = Campath::selected;
+        count = (int)Campath::keys.size();
+        if (sel >= count) sel = Campath::selected = count - 1;
+        if (count) t0 = Campath::keys.front().t;
+        if (sel >= 0) k = Campath::keys[sel];
+    }
+    if (sel < 0) { Hint("Select a key (in the list or on the map) to edit it."); return; }
+    ImGui::PushFont(Ui::bold, 0.f);
+    ImGui::Text("Key %d of %d", sel + 1, count);
+    ImGui::PopFont();
+    bool edit = false;
+    float rel = (float)(k.t - t0);
+    ImGui::PushItemWidth(-Ui::S(90));
+    if (sel > 0) edit |= ImGui::DragFloat("Time", &rel, 0.01f, 0.f, 3600.f, "+%.2f s");
+    else ImGui::TextDisabled("Time: the path starts here (move it with Start here)");
+    edit |= ImGui::DragFloat3("Position", k.pos, 1.f, -16384.f, 16384.f, "%.1f");
+    edit |= ImGui::DragFloat3("Pitch/Yaw/Roll", k.ang, 0.2f, -360.f, 360.f, "%.1f");
+    edit |= ImGui::SliderFloat("Field of view", &k.fov, 10.f, 140.f, "%.1f deg");
+    if (sel + 1 < count) edit |= Ui::Toggle("Cut to the next key (hold this view until then)", &k.cut);
+    ImGui::PopItemWidth();
+    if (edit) {
+        k.ang[0] = std::clamp(k.ang[0], -89.f, 89.f);
+        if (sel > 0) k.t = t0 + std::max(0.02f, rel);
+        if (!g_cpDragging) { Campath::SaveUndoStep(); g_cpDragging = true; }   // one undo step per drag, not per frame
+        Campath::UpdateKey(sel, k);
+    }
+    if (!ImGui::IsAnyItemActive()) g_cpDragging = false;
+    if (ImGui::Button("Set to current view", ImVec2(Ui::S(160), 0))) {
+        if (Campath::SetKeyToView(sel)) CpNote("Key moved to the current view.", Ui::kGood);
+        else CpNote("The camera isn't known yet - play the demo for a moment.", Ui::kWarn);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Go to", ImVec2(Ui::S(70), 0))) GoToTick(Campath::TickFor(k.t));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Jumps the demo to this key's moment.");
+    ImGui::SameLine();
+    if (ImGui::Button("Delete", ImVec2(Ui::S(70), 0))) Campath::RemoveKey(sel);
+    ImGui::SameLine();
+    if (ImGui::Button("Clear all", ImVec2(-1, 0))) { Campath::Clear(); CpNote("All keys removed (Undo brings them back).", Ui::kMuted); }
+}
+
+static void KeyList() {
+    std::vector<Campath::Key> ks;
+    int sel;
+    {
+        std::lock_guard<std::mutex> g(Campath::lock);
+        ks = Campath::keys;
+        sel = Campath::selected;
+    }
+    for (size_t i = 0; i < ks.size(); ++i) {
+        char left[96], right[48], id[24];
+        std::snprintf(left, sizeof left, "%2u   +%.2f s", (unsigned)i + 1, ks[i].t - ks.front().t);
+        std::snprintf(right, sizeof right, "fov %.0f", ks[i].fov);
+        std::snprintf(id, sizeof id, "##cpk%u", (unsigned)i);
+        Ui::RowOpts o;
+        o.right = right;
+        o.rightCol = Ui::Col(Ui::kMuted);
+        if (Ui::Row(id, left, (int)i == sel, o)) {
+            std::lock_guard<std::mutex> g(Campath::lock);
+            Campath::selected = (int)i;
+        }
+    }
+}
+
+static void CinematicsTab() {
+    const float h = ImGui::GetContentRegionAvail().y;
+    ImGui::BeginChild("##cineleft", ImVec2(std::clamp(ImGui::GetContentRegionAvail().x * 0.42f, Ui::S(360), Ui::S(470)), h), ImGuiChildFlags_Borders);
+    Ui::SmoothScroll();
+    CinematicsLeft();
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("##cineright", ImVec2(0, h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+    PathMap(std::max(Ui::S(180), h * 0.42f), g_cpMode == 0);
+    ImGui::Spacing();
+    if (g_cpMode == 0) PointEditor();
+    else KeyEditor();
+    ImGui::Spacing();
+    ImGui::BeginChild("##cp_keys", ImVec2(0, 0), ImGuiChildFlags_None);
+    Ui::SmoothScroll();
+    if (g_cpMode == 0) PointList();
+    else KeyList();
+    ImGui::EndChild();
+    ImGui::EndChild();
+}
+
+// ------------------------------------------------------------------ Record tab
+// Kill recorder: scan the demo file, pick a player, choose clips, record with HLAE (motion blur, MP4).
+static std::vector<Record::Clip> g_rcClips;
+static uint64_t g_rcClipsFor = 0;
+static std::string g_rcClipsScan;
+static float g_rcBuiltBefore = -1, g_rcBuiltAfter = -1;
+static bool g_rcBuiltMerge = false;
+static char g_rcPath[MAX_PATH] = "";
+
+static bool BrowseDemo(char* path) {
+    char file[MAX_PATH];
+    std::snprintf(file, sizeof file, "%s", path);
+    std::string dir = Game::GameFolder();
+    OPENFILENAMEA o{};
+    o.lStructSize = sizeof o;
+    o.lpstrFilter = "CS2 demos (*.dem)\0*.dem\0All files\0*.*\0";
+    o.lpstrFile = file;
+    o.nMaxFile = MAX_PATH;
+    o.lpstrInitialDir = path[0] ? nullptr : (dir.empty() ? nullptr : dir.c_str());
+    o.lpstrTitle = "The demo you are watching";
+    o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameA(&o)) return false;
+    std::snprintf(path, MAX_PATH, "%s", file);
+    return true;
+}
+
+// Motion blur, frame rate, stretch, quality - shared by the Record tab and the Cinematics tab (same settings)
+static void VideoSettings(bool killClips) {
+    int gw = 0, gh = 0, sw = 0, sh = 0;   // CS2's size, looked up outside the lock (see Record::GameSize)
+    const bool known = Record::GameSize(gw, gh);
+    const bool narrow = known && Record::StretchSize(gw, gh, sw, sh);
+    {
+        std::lock_guard<std::mutex> g(Record::lock);
+        Ui::Toggle("Motion blur", &Record::set.blur);
+        ImGui::PushItemWidth(-Ui::S(130));
+        static const char* kFps[] = {"30", "60", "120"};
+        int fpsSel = Record::set.fps <= 30 ? 0 : Record::set.fps >= 120 ? 2 : 1;
+        CpLabel("Frame rate");
+        if (Ui::Segmented("##rc_fps", kFps, 3, &fpsSel)) Record::set.fps = fpsSel == 0 ? 30 : fpsSel == 2 ? 120 : 60;
+        if (Record::set.blur) {
+            static const char* kSmp[] = {"4", "8", "16", "32"};
+            int smpSel = Record::set.samples <= 4 ? 0 : Record::set.samples <= 8 ? 1 : Record::set.samples <= 16 ? 2 : 3;
+            CpLabel("Blur samples");
+            if (Ui::Segmented("##rc_smp", kSmp, 4, &smpSel)) Record::set.samples = 4 << smpSel;
+            ImGui::SliderFloat("Blur amount", &Record::set.blurAmount, 0.1f, 1.f, "%.2f");
+            Hint("More samples = smoother blur, slower to record (the game runs at frame rate x samples).");
+        }
+        {
+            Ui::Toggle("Stretch 4:3 to 16:9", &Record::set.stretch);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("When CS2 runs in a 4:3 (or 5:4) resolution, the clips are stretched to 16:9 - the stretched look players use.");
+            if (!known) Hint("CS2's resolution isn't known yet.");
+            else if (narrow) Hint(Record::set.stretch ? "CS2 is %dx%d (4:3): clips come out stretched to %dx%d." : "CS2 is %dx%d (4:3): clips stay 4:3.", gw, gh, sw, sh);
+            else Hint("CS2 is %dx%d (wide): nothing to stretch.", gw, gh);
+        }
+        ImGui::SliderInt("Quality (CRF)", &Record::set.crf, 12, 30, "%d");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lower = better and bigger files. 18 looks clean.");
+        ImGui::PopItemWidth();
+        if (killClips) {
+            Ui::Toggle("Save each clip as its own MP4", &Record::set.clips);
+            Ui::Toggle("Join all clips into one MP4", &Record::set.combined);
+            if (!Record::set.clips && !Record::set.combined) Record::set.combined = true;
+        }
+    }
+
+}
+
+static void RecordLeft() {
+    const Record::Scan sc = Record::ScanState();
+    const Record::Progress pr = Record::Status();
+
+    Hint("Records every kill of one player from the demo you are watching, with motion blur, as MP4 files - through HLAE's "
+         "recording (mirv_streams) and its ffmpeg.");
+    Section("1. The demo");
+    {
+        std::string file = sc.path;
+        const size_t sl = file.find_last_of("\\/");
+        if (sl != std::string::npos) file = file.substr(sl + 1);
+        if (sc.busy) Hint("Reading %s for kills...", file.c_str());
+        else if (sc.result.ok) {
+            ImGui::TextUnformatted(file.c_str());
+            Hint("%s - %u rounds, %u kills (found by itself: the demo CS2 is playing).", sc.result.map.c_str(),
+                 (unsigned)sc.result.roundStarts.size(), (unsigned)sc.result.kills.size());
+        } else if (!sc.path.empty()) Hint("Couldn't read %s: %s", file.c_str(), sc.result.error.c_str());
+        else if (!Skins::demoPlaying) Hint("Play a demo - DemoTools2 finds its file and reads every kill by itself.");
+        else if (Record::AutoFindFailed()) {
+            Hint("CS2 didn't show which file it is playing. Pick it once:");
+            if (ImGui::Button("Choose the demo file", ImVec2(Ui::S(170), 0)) && BrowseDemo(g_rcPath)) Record::StartScan(g_rcPath);
+        } else Hint("Finding the demo CS2 is playing...");
+    }
+
+    Section("2. The player");
+    {
+        const auto who = Record::PlayersWithKills();
+        int cur;
+        {
+            std::lock_guard<std::mutex> g(Record::lock);
+            cur = Record::set.slot;
+        }
+        std::string preview = "Choose a player";
+        for (const auto& w : who) if (w.slot == cur) preview = w.name + " - " + std::to_string(w.kills) + " kills";
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##rc_player", preview.c_str())) {
+            Ui::SmoothScroll();
+            for (const auto& w : who) {
+                char label[220];
+                std::snprintf(label, sizeof label, "%s %s - %d kills##%d", w.team == 2 ? "T " : w.team == 3 ? "CT" : "  ", w.name.c_str(), w.kills, w.slot);
+                if (ImGui::Selectable(label, cur == w.slot)) {
+                    std::lock_guard<std::mutex> g(Record::lock);
+                    Record::set.slot = w.slot;
+                    Record::set.xuid = w.xuid;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (who.empty()) Hint("Read the demo file first.");
+    }
+
+    Section("3. Clips");
+    {
+        std::lock_guard<std::mutex> g(Record::lock);
+        ImGui::PushItemWidth(-Ui::S(130));
+        ImGui::SliderFloat("Before a kill", &Record::set.before, 0.5f, 10.f, "%.1f s");
+        ImGui::SliderFloat("After a kill", &Record::set.after, 0.5f, 10.f, "%.1f s");
+        ImGui::PopItemWidth();
+        Ui::Toggle("Kills close together in one clip (multi-kills)", &Record::set.merge);
+    }
+
+    Section("4. View");
+    {
+        static const char* kView[] = {"POV with HUD", "Clean (no HUD)"};
+        std::lock_guard<std::mutex> g(Record::lock);
+        Ui::Segmented("##rc_view", kView, 2, &Record::set.view);
+        if (Record::set.view == 1) Ui::Toggle("Show the gun and hands", &Record::set.hands);
+        else Hint("The player's own HUD through DemoTools2's POV HUD (Cinematics tab).");
+    }
+
+    Section("5. Video");
+    VideoSettings(true);
+
+    Section("Output");
+    {
+        const std::string out = Record::OutDir();
+        Hint("%s", out.c_str());
+        if (ImGui::Button("Open folder##rc", ImVec2(Ui::S(110), 0))) {
+            CreateDirectoryA((DllFolder() + "recordings").c_str(), nullptr);
+            CreateDirectoryA(out.c_str(), nullptr);
+            ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        const std::string ff = Record::FfmpegPath();
+        if (!Record::HlaeLoaded()) Hint("HLAE isn't loaded - recording needs CS2 started through HLAE.");
+        if (ff.empty()) Hint("ffmpeg.exe not found automatically (looked in: %s). Pick it below - it's in HLAE's ffmpeg folder, "
+                             "usually ffmpeg\\bin\\ffmpeg.exe.", Record::FfmpegSearched().c_str());
+        else Hint("ffmpeg: %s", ff.c_str());
+        if (ImGui::Button("Choose ffmpeg.exe", ImVec2(Ui::S(150), 0))) {
+            char file[MAX_PATH] = "";
+            OPENFILENAMEA o{};
+            o.lStructSize = sizeof o;
+            o.lpstrFilter = "ffmpeg.exe\0ffmpeg.exe\0Programs\0*.exe\0";
+            o.lpstrFile = file;
+            o.nMaxFile = MAX_PATH;
+            o.lpstrTitle = "ffmpeg.exe (in HLAE's ffmpeg folder)";
+            o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            if (GetOpenFileNameA(&o)) {
+                std::lock_guard<std::mutex> g(Record::lock);
+                Record::set.ffmpeg = file;
+            }
+        }
+    }
+    (void)pr;
+}
+
+static void RecordRight() {
+    const Record::Scan sc = Record::ScanState();
+    const Record::Progress pr = Record::Status();
+    uint64_t xuid;
+    float before, after;
+    bool merge;
+    {
+        std::lock_guard<std::mutex> g(Record::lock);
+        xuid = (uint64_t)(Record::set.slot + 1);   // "who" for the rebuild check (slot based)
+        before = Record::set.before;
+        after = Record::set.after;
+        merge = Record::set.merge;
+    }
+    // rebuild the list when the player, the scan or the timing changed (keeps the ticks you set off)
+    if (!pr.running && (xuid != g_rcClipsFor || sc.path + std::to_string(sc.result.kills.size()) != g_rcClipsScan || before != g_rcBuiltBefore ||
+                        after != g_rcBuiltAfter || merge != g_rcBuiltMerge)) {
+        std::vector<bool> off;
+        for (auto& c : g_rcClips) off.push_back(!c.on);
+        auto fresh = Record::BuildClips();
+        if (xuid == g_rcClipsFor && fresh.size() == off.size())
+            for (size_t i = 0; i < fresh.size(); ++i) fresh[i].on = !off[i];
+        if (!fresh.empty() || xuid != g_rcClipsFor) g_rcClips = fresh;
+        g_rcClipsFor = xuid;
+        g_rcClipsScan = sc.path + std::to_string(sc.result.kills.size());
+        g_rcBuiltBefore = before;
+        g_rcBuiltAfter = after;
+        g_rcBuiltMerge = merge;
+    }
+    int on = 0;
+    float secs = 0;
+    for (auto& c : g_rcClips) if (c.on) { ++on; secs += (c.end - c.start) / 64.f; }
+
+    if (pr.running) {
+        Ui::StatusPill("Recording", Ui::kBad);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("clip %d of %d", pr.clip, pr.clips);
+        Hint("%s", pr.state.c_str());
+        if (Ui::PrimaryButton("Stop", ImVec2(Ui::S(120), 0))) Record::Stop();
+        Hint("Leave CS2 alone while it records: it jumps through the demo by itself.");
+    } else {
+        char label[64];
+        std::snprintf(label, sizeof label, "Record %d clip%s", on, on == 1 ? "" : "s");
+        const bool playing = Skins::demoPlaying;
+        ImGui::BeginDisabled(on == 0 || !Record::HlaeLoaded() || !playing);
+        if (Ui::PrimaryButton(label, ImVec2(Ui::S(170), 0))) Record::Start(g_rcClips);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%.0f s of video", secs);
+        if (on > 0 && !playing) Hint("Play this demo in CS2 (pausing is fine) - recording jumps through it.");
+        else if (on > 0 && !Record::HlaeLoaded()) Hint("Start CS2 through HLAE to record.");
+        if (!pr.state.empty()) Hint("Last run: %s", pr.state.c_str());
+    }
+    if (!pr.post.empty()) Hint("%s", pr.post.c_str());
+    if (pr.done.size() > 3) ImGui::TextDisabled("%u files saved, newest:", (unsigned)pr.done.size());
+    for (size_t i = pr.done.size() > 3 ? pr.done.size() - 3 : 0; i < pr.done.size(); ++i) ImGui::TextDisabled("saved: %s", pr.done[i].c_str());
+    ImGui::Spacing();
+
+    if (g_rcClips.empty()) {
+        if (!sc.result.ok) Hint("Read the demo file first (left), then choose a player.");
+        else if (xuid == 0) Hint("Choose the player whose kills to record.");
+        else Hint("No kills for this player in this demo.");
+        return;
+    }
+    if (ImGui::SmallButton("All")) for (auto& c : g_rcClips) c.on = true;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("None")) for (auto& c : g_rcClips) c.on = false;
+    ImGui::BeginChild("##rc_list", ImVec2(0, 0), ImGuiChildFlags_None);
+    Ui::SmoothScroll();
+    if (ImGui::BeginTable("##rc_clips", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_PadOuterX)) {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Round", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("Kills", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::PushStyleColor(ImGuiCol_Text, Ui::kMuted);
+        ImGui::TableHeadersRow();
+        ImGui::PopStyleColor();
+        // pr.clip counts the clips that are on: find the row it is
+        int current = -1;
+        if (pr.running)
+            for (int i = 0, k = 0; i < (int)g_rcClips.size(); ++i)
+                if (g_rcClips[i].on && ++k == pr.clip) { current = i; break; }
+        for (size_t i = 0; i < g_rcClips.size(); ++i) {
+            Record::Clip& c = g_rcClips[i];
+            ImGui::PushID((int)i);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(pr.running);
+            ImGui::Checkbox("##on", &c.on);
+            ImGui::EndDisabled();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            if (c.round > 0) ImGui::Text("%d", c.round);
+            else ImGui::TextDisabled("-");
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            if ((int)i == current) ImGui::TextColored(Ui::kAccent, "%s", c.summary.c_str());
+            else if (c.on) ImGui::TextUnformatted(c.summary.c_str());
+            else ImGui::TextDisabled("%s", c.summary.c_str());
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("%.1f s", (c.end - c.start) / 64.f);
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(pr.running);
+            if (ImGui::SmallButton("Watch")) GoToTick(std::max(0, c.start - 64));
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Jump the demo to one second before this clip.");
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+}
+
+static void RecordTab() {
+    const float h = ImGui::GetContentRegionAvail().y;
+    ImGui::BeginChild("##recleft", ImVec2(std::clamp(ImGui::GetContentRegionAvail().x * 0.42f, Ui::S(360), Ui::S(470)), h), ImGuiChildFlags_Borders);
+    Ui::SmoothScroll();
+    RecordLeft();
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("##recright", ImVec2(0, h), ImGuiChildFlags_Borders);
+    RecordRight();
+    ImGui::EndChild();
+}
+
 // ------------------------------------------------------------------ Status tab
 // What was found in this CS2 build. After a CS2 or HLAE update, parts that weren't found switch themselves off and say
 // so here; the menu and everything else keep working.
 static void StatusTab() {
     const auto feats = Features();
-    ImGui::BeginChild("##status", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    int nOk = 0, nLim = 0, nOff = 0;
+    for (const FeatureInfo& f : feats) (f.state == Feat_Ok ? nOk : f.state == Feat_Limited ? nLim : nOff)++;
+    ImGui::BeginChild("##status", ImVec2(0, 0), ImGuiChildFlags_None);
     Ui::SmoothScroll();
-    Ui::Heading("Status");
-    if (g_gameBuild) Hint("DemoTools2 %s  ·  CS2 build %d", DEMOTOOLS2_VERSION, g_gameBuild);
-    else Hint("DemoTools2 %s", DEMOTOOLS2_VERSION);
-    ImGui::Spacing();
+    {
+        const float sp = ImGui::GetStyle().ItemSpacing.x;
+        const float w = std::max(Ui::S(120), (ImGui::GetContentRegionAvail().x - sp * 2) / 3.f);
+        char a[16], b[16], c[16];
+        std::snprintf(a, sizeof a, "%d", nOk);
+        std::snprintf(b, sizeof b, "%d", nLim);
+        std::snprintf(c, sizeof c, "%d", nOff);
+        Ui::StatTile(a, "Working", Ui::kGood, w);
+        ImGui::SameLine();
+        Ui::StatTile(b, "Limited", nLim ? Ui::kWarn : Ui::kMuted, w);
+        ImGui::SameLine();
+        Ui::StatTile(c, "Off", nOff ? Ui::kBad : Ui::kMuted, w);
+    }
+    Ui::Section("Features");
     if (feats.empty()) Hint("Starting...");
     for (const FeatureInfo& f : feats) {
         const ImVec4 col = f.state == Feat_Ok ? Ui::kGood : f.state == Feat_Limited ? Ui::kWarn : Ui::kBad;
@@ -1015,85 +2021,32 @@ static void StatusTab() {
     }
     const auto crashed = CrashedSteps();
     if (!crashed.empty()) {
-        ImGui::Spacing();
-        SubHeading("Switched off for this session (crashed last time)");
-        for (auto& c : crashed) Hint("%s", c.c_str());
-        Hint("They come back on the next start. If one keeps crashing, send DemoTools2.previous.log.");
+        Ui::Section("Switched off for this session");
+        Hint("These crashed last time, so they stay off until CS2 restarts. If one keeps crashing, send DemoTools2.previous.log.");
+        for (auto& c : crashed) {
+            ImGui::PushStyleColor(ImGuiCol_Text, Ui::kWarn);
+            ImGui::BulletText("%s", c.c_str());
+            ImGui::PopStyleColor();
+        }
     }
-    ImGui::Spacing();
-    Hint("After a CS2 or HLAE update: anything that wasn't found switches itself off and shows here, the rest keeps "
-         "working. Skin parts may need a DemoTools2 update. Send DemoTools2.log from the DemoTools2 folder if something is off.");
+    Ui::Section("This copy");
+    if (g_gameBuild) Hint("DemoTools2 %s, CS2 build %d.", DEMOTOOLS2_VERSION, g_gameBuild);
+    else Hint("DemoTools2 %s.", DEMOTOOLS2_VERSION);
+    Hint("After a CS2 or HLAE update, anything that wasn't found switches itself off and shows here; the rest keeps working. "
+         "Skin parts may need a DemoTools2 update. If something is off, send DemoTools2.log from the DemoTools2 folder.");
     ImGui::Spacing();
     if (ImGui::Button("Open DemoTools2 folder")) ShellExecuteA(nullptr, "open", DllFolder().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    ImGui::SameLine();
+    if (ImGui::Button("Open the log")) ShellExecuteA(nullptr, "open", (DllFolder() + "DemoTools2.log").c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     ImGui::EndChild();
 }
 
-void Draw(bool fillWindow) {
-    std::lock_guard<std::mutex> guard(Skins::lock);
-    if (g_saveAt && GetTickCount64() >= g_saveAt) { g_saveAt = 0; Skins::Save(); }
+// ------------------------------------------------------------------ the window
+enum Page { Page_Camera, Page_Cinematics, Page_Record, Page_Skins, Page_Status, Page_Count };
+static int g_page = Page_Skins;
 
-    if (fillWindow) {
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-    } else {
-        ImGui::SetNextWindowSize(ImVec2(Ui::S(1080), Ui::S(680)), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowPos(ImVec2(80, 80), ImGuiCond_FirstUseEver);
-    }
-    ImGui::Begin("DemoTools2", nullptr,
-                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-                     (fillWindow ? ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus : 0));
-
-    // Header: name, version, and what DemoTools2 is doing right now.
-    {
-        ImGui::PushFont(Ui::bold, ImGui::GetStyle().FontSizeBase * 1.3f);
-        ImGui::TextUnformatted("DemoTools2");
-        ImGui::PopFont();
-        ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, Ui::kMuted);
-        ImGui::TextUnformatted(DEMOTOOLS2_VERSION);
-        ImGui::PopStyleColor();
-        const std::string& st = Skins::lastStatus;
-        const ImVec4 col = !Skins::demoPlaying ? Ui::kWarn : Skins::anyModelBlocked ? Ui::kWarn : Ui::kGood;
-        const float w = ImGui::CalcTextSize(st.c_str()).x + Ui::S(36);
-        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + Ui::S(16), ImGui::GetContentRegionMax().x - w));
-        Ui::StatusPill(st.c_str(), col);
-        if (Skins::demoPlaying && Skins::anyModelBlocked && ImGui::IsItemHovered())
-            ImGui::SetTooltip("Older demo: only knife, glove and agent models someone in this demo has can be used.");
-    }
-    ImGui::Spacing();
-
-    static int mainTab = 0;
-    if (!ImGui::BeginTabBar("##tabs")) { ImGui::End(); return; }
-    if (ImGui::BeginTabItem("Camera (WIP)###camera", nullptr, g_openTab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) { mainTab = 0; ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Skins", nullptr, g_openTab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) { mainTab = 1; ImGui::EndTabItem(); }
-    {
-        bool anyOff = false;
-        for (auto& f : Features()) anyOff |= f.state == Feat_Off && f.key != "camera" && f.key != "console";
-        if (ImGui::BeginTabItem(anyOff ? "Status (!)###status" : "Status###status", nullptr, g_openTab == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
-            mainTab = 2;
-            ImGui::EndTabItem();
-        }
-    }
-    ImGui::EndTabBar();
-    g_openTab = -1;
-
-    const float fade = Ui::FadeIn("main", (uint64_t)mainTab);
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.3f + 0.7f * fade);
-    if (mainTab == 2) {
-        StatusTab();
-        ImGui::PopStyleVar();
-        ImGui::End();
-        return;
-    }
-    if (mainTab == 0) {
-        CameraTab();
-        ImGui::PopStyleVar();
-        ImGui::End();
-        return;
-    }
-
-    // Skins toolbar
+static void SkinsPage() {
+    // toolbar
     {
         Ui::Toggle("Skins on", &Skins::settings.enabled);
         ImGui::SameLine(0, Ui::S(18));
@@ -1115,7 +2068,7 @@ void Draw(bool fillWindow) {
                               "unless 'any_model_old_demos=1' is set in DemoTools2.cfg.");
         const char* refresh = "Refresh now";
         const float bw = ImGui::CalcTextSize(refresh).x + ImGui::GetStyle().FramePadding.x * 2;
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - bw);
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + Ui::S(12), ImGui::GetContentRegionMax().x - bw));
         if (ImGui::Button(refresh)) Skins::RequestSeek();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reloads this moment of the demo (jumps 1 tick back). Skins normally update by themselves.");
         if (!Skins::knifeNote.empty()) {
@@ -1128,8 +2081,8 @@ void Draw(bool fillWindow) {
 
     const float h = ImGui::GetContentRegionAvail().y;
     const float total = ImGui::GetContentRegionAvail().x;
-    const float wPlayers = std::clamp(total * 0.24f, Ui::S(200), Ui::S(300));
-    const float wSlots = std::clamp(total * 0.30f, Ui::S(250), Ui::S(380));
+    const float wPlayers = std::clamp(total * 0.26f, Ui::S(200), Ui::S(300));
+    const float wSlots = std::clamp(total * 0.32f, Ui::S(250), Ui::S(380));
     ImGui::BeginChild("##players", ImVec2(wPlayers, h), ImGuiChildFlags_Borders);
     Ui::SmoothScroll();
     PlayersColumn();
@@ -1152,7 +2105,124 @@ void Draw(bool fillWindow) {
         ImGui::PopStyleVar();
     }
     ImGui::EndChild();
+}
+
+static void Sidebar(int offCount, int limitedCount) {
+    ImGui::PushFont(Ui::bold, ImGui::GetStyle().FontSizeBase * 1.3f);
+    ImGui::TextUnformatted("DemoTools2");
+    ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_Text, Ui::kMuted);
+    ImGui::Text("Version %s", DEMOTOOLS2_VERSION);
+    ImGui::PopStyleColor();
+    ImGui::Dummy(ImVec2(0, Ui::S(10)));
+
+    struct Item { int page; int icon; const char* label; const char* sub; };
+    static const Item kItems[] = {
+        {Page_Camera, Ui::Icon_Camera, "Camera", "Follow and attach"},
+        {Page_Cinematics, Ui::Icon_Cinematics, "Cinematics", "Smooth campaths"},
+        {Page_Record, Ui::Icon_Record, "Record", "Kill clips to MP4"},
+        {Page_Skins, Ui::Icon_Skins, "Skins", "Finishes and knives"},
+        {Page_Status, Ui::Icon_Status, "Status", "This CS2 build"},
+    };
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, Ui::S(3)));
+    for (const Item& it : kItems) {
+        char id[24];
+        std::snprintf(id, sizeof id, "##nav%d", it.page);
+        int badge = 0;
+        ImVec4 bc = Ui::kMuted;
+        if (it.page == Page_Status) {
+            if (offCount) { badge = offCount; bc = Ui::kBad; }
+            else if (limitedCount) { badge = limitedCount; bc = Ui::kWarn; }
+        }
+        if (it.page == Page_Record && Record::Status().running) { badge = 1; bc = Ui::kBad; }
+        if (Ui::NavItem(id, it.icon, it.label, it.sub, g_page == it.page, badge, bc)) g_page = it.page;
+        if (it.page == Page_Record && badge && ImGui::IsItemHovered()) ImGui::SetTooltip("Recording now");
+    }
     ImGui::PopStyleVar();
+
+    // bottom: what DemoTools2 is doing right now
+    const float lh = ImGui::GetTextLineHeightWithSpacing();
+    const float footer = ImGui::GetFrameHeight() + lh * 3.2f + Ui::S(8);
+    const float y = ImGui::GetWindowHeight() - ImGui::GetStyle().WindowPadding.y - footer;
+    if (y > ImGui::GetCursorPosY()) ImGui::SetCursorPosY(y);
+    const ImVec4 col = !Skins::demoPlaying ? Ui::kWarn : Skins::anyModelBlocked ? Ui::kWarn : Ui::kGood;
+    Ui::StatusPill(Skins::demoPlaying ? "Demo playing" : "No demo", col);
+    ImGui::PushStyleColor(ImGuiCol_Text, Ui::kMuted);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextUnformatted(Skins::demoPlaying && Skins::anyModelBlocked
+                               ? "Older demo: only knife, glove and agent models someone in it has can be used."
+                               : Skins::lastStatus.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+void Draw(bool fillWindow) {
+    std::lock_guard<std::mutex> guard(Skins::lock);
+    if (g_saveAt && GetTickCount64() >= g_saveAt) { g_saveAt = 0; Skins::Save(); }
+
+    if (fillWindow) {
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    } else {
+        ImGui::SetNextWindowSize(ImVec2(Ui::S(1180), Ui::S(720)), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(80, 80), ImGuiCond_FirstUseEver);
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("DemoTools2", nullptr,
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                     (fillWindow ? ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus : 0));
+    ImGui::PopStyleVar();
+
+    int offCount = 0, limitedCount = 0;
+    for (auto& f : Features()) {
+        if (f.state == Feat_Off && f.key != "camera" && f.key != "console") ++offCount;
+        if (f.state == Feat_Limited) ++limitedCount;
+    }
+
+    // sidebar
+    const float sideW = Ui::S(224);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.043f, 0.055f, 0.067f, 1.f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Ui::S(12), Ui::S(16)));
+    ImGui::BeginChild("##side", ImVec2(sideW, 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    Sidebar(offCount, limitedCount);
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+    {
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(b.x - 1, a.y), ImVec2(b.x - 1, b.y), Ui::Col(ImVec4(1, 1, 1, 0.06f)));
+    }
+    ImGui::SameLine(0, 0);
+
+    // page
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Ui::S(20), Ui::S(16)));
+    ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    {
+        static const char* kTitle[] = {"Camera", "Cinematics", "Record", "Skins", "Status"};
+        static const char* kSub[] = {
+            "Follow a player or bolt the camera to a part of them. Every move is a dt2_calc you can change live.",
+            "Build a campath with the demo paused, let DemoTools2 time it, then preview and record it.",
+            "Every kill of one player in the demo you are watching, with motion blur, saved as MP4 through HLAE.",
+            "Give any player any finish, knife, gloves or agent. Saved per player and used in every demo.",
+            "What DemoTools2 found in this CS2 build."};
+        const bool beta = g_page == Page_Camera;
+        Ui::PageHeader(kTitle[g_page], kSub[g_page], beta ? "Beta" : nullptr, Ui::kWarn);
+    }
+    const float fade = Ui::FadeIn("main", (uint64_t)g_page);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.3f + 0.7f * fade);
+    switch (g_page) {
+        case Page_Camera: CameraTab(); break;
+        case Page_Cinematics: CinematicsTab(); break;
+        case Page_Record: RecordTab(); break;
+        case Page_Status: StatusTab(); break;
+        default: SkinsPage(); break;
+    }
+    ImGui::PopStyleVar();
+    ImGui::EndChild();
     ImGui::End();
 }
 }  // namespace Menu

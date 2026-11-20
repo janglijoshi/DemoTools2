@@ -42,8 +42,10 @@ loading DemoTools2, and every part of the menu (knives, gloves, agents, guns, st
 | 🔄 **T / CT loadouts** | Different skins per side, switched automatically at half time |
 | 🎯 **Only your guns** | Only guns the player owns change; a gun picked up from someone else keeps its skin |
 | 🕰️ **Older demos** | Works with demos recorded on earlier CS2 versions |
-| 🩺 **Status tab** | After a CS2 or HLAE update, it shows what works and switches off what doesn't |
-| 🎥 **Camera** | Attach the camera to players and guns, record with `mirv_streams`. **Work in progress** |
+| 🎞️ **Record** | Every kill of one player, found in the demo file, recorded by itself to MP4 with motion blur (one file per clip and/or all joined), 4:3 stretched to 16:9 |
+| 🎬 **Cinematics** | Build a campath with the demo paused and let DemoTools2 time it; hotkeys, orbit and dolly moves, HLAE campath files, and recording the path to MP4 |
+| 🎥 **Camera** | Follow a player or bolt the camera to their gun, head or grenade, live calcs and presets (beta) |
+| 🩺 **Status** | After a CS2 or HLAE update, it shows what works and switches off what doesn't |
 
 <p align="center">
   <img src="docs/menu-skins.png" alt="The DemoTools2 Skins tab: players on the left, the T side loadout in the middle, knife finishes on the right" width="49%">
@@ -86,15 +88,18 @@ Only use it in demos, the way the tutorial shows.
 
 # 📖 Full guide
 
-DemoTools2 (formerly DemoSkins) is loaded into CS2 by HLAE and has two parts:
+DemoTools2 (formerly DemoSkins) is loaded into CS2 by HLAE. Its window has five pages, picked in the sidebar on the left:
 
-* **Skins** (*Skins* tab): choose a player in a CS2 demo by their XUID (SteamID64), then give their guns, knife and
+* **Camera** (beta; `dt2_calc` / `dt2_cam` / `dt2_preset`): attach the camera to a player, their gun or their grenade
+  and follow it smoothly, like `mirv_calc` + `mirv_cam` in HLAE for CS:GO. Record it with HLAE's `mirv_streams`.
+* **Cinematics** (`dt2_campath`): campaths built with the demo paused and timed by DemoTools2, live path keys, quick
+  orbit / dolly moves, hotkeys, and recording the path to MP4.
+* **Record** (`dt2_record`): every kill of one player in the playing demo, recorded to MP4 with motion blur.
+* **Skins**: choose a player in a CS2 demo by their XUID (SteamID64), then give their guns, knife and
   gloves any finish, wear, pattern seed, StatTrak counter, name tag, **stickers** and a **charm**, and change their
   **agent** (player model). Each player can have a separate **T side** and **CT side** loadout. Only that player's
   items change. It works the way nSkinz did for CS:GO.
-* **Camera and calcs (WIP)** (*Camera* tab, `dt2_calc` / `dt2_cam` / `dt2_preset`): *work in progress - still
-  being built and may change or not work in every demo.* Attach the camera to a player, their gun or their grenade
-  and follow it smoothly, like `mirv_calc` + `mirv_cam` in HLAE for CS:GO. Record it with HLAE's `mirv_streams`.
+* **Status**: what DemoTools2 found in this CS2 build, and what is switched off.
 
 Coming from DemoSkins: load `DemoTools2.dll` *instead of* `DemoSkins.dll` (not both). Your skins are taken over from
 `DemoSkins.cfg` in the same folder the first time.
@@ -108,7 +113,8 @@ Coming from DemoSkins: load `DemoTools2.dll` *instead of* `DemoSkins.dll` (not b
    mirv_loadlibrary "C:\HLAE\DemoTools2\DemoTools2.dll"
    ```
    The console replies `LoadLibraryA OK.`, and the DemoTools2 window opens.
-3. Play a demo (`playdemo mydemo`). The DemoTools2 window shows (press **Insert** in CS2 to show or hide it):
+3. Play a demo (`playdemo mydemo`). The DemoTools2 window shows (press **Insert** in CS2 to show or hide it). Pick a
+   page in the sidebar; the bottom of the sidebar says whether a demo is playing. The **Skins** page:
    * **Left:** the players in the demo (hover a name to see their XUID). You can also add a player by XUID.
    * **Middle:** *Both sides / T side / CT side* buttons, then *Knife*, *Gloves* and *Agent*, then that player's
      guns. The guns they are holding right now are at the top, with a green dot.
@@ -121,10 +127,104 @@ Coming from DemoSkins: load `DemoTools2.dll` *instead of* `DemoSkins.dll` (not b
 
 To load it automatically, add the `mirv_loadlibrary` line to HLAE's CS2 config, or to an `.cfg` you `exec`.
 
-## Camera and calcs (WIP)
+## Record (kill clips)
 
-> **Work in progress.** The camera tools are still being built. They may change in later versions and may not work in
-> every demo. The skins part doesn't depend on them.
+The **Record** tab records every kill of one player, by itself, through HLAE's own recording (`mirv_streams`) and
+HLAE's ffmpeg. Start CS2 through HLAE as usual, and set up ffmpeg in HLAE once (File > Settings).
+
+1. Play the demo. DemoTools2 finds the file CS2 is playing by itself and reads every kill from it (nothing is
+   changed); the player you are watching is chosen. (Only if CS2 doesn't show which file it plays, the tab asks for
+   it once.)
+2. Choose another player if you want. The list shows each clip: the round, the kills (weapon, headshot, wallbang, no-scope, smoke).
+   Untick the ones you don't want; **Watch** jumps the demo there.
+3. Set the clip length (seconds before / after a kill; kills close together become one clip), the view
+   (**POV with HUD** - DemoTools2's POV HUD - or **Clean** first person, with or without the gun), motion blur
+   (frame rate, samples, amount) and quality.
+4. Press **Record**. DemoTools2 goes to each clip, makes the demo watch the player, records it and moves on. Leave
+   CS2 alone until it says done. **Stop** ends it early and keeps the part of the clip already recorded.
+
+The files go to `recordings\<demo name>` next to the DLL: `01_round03_2k_ak47.mp4` and so on (video and game sound),
+and `<player>_all_kills.mp4` with every clip joined. HLAE's own take folders (the raw recordings) stay there too.
+When CS2 runs in a 4:3 (or 5:4) resolution, the clips are stretched to 16:9 while they are encoded (1440x1080 becomes
+1920x1080), the stretched look players use; **Stretch 4:3 to 16:9** turns that off.
+Motion blur makes the game run at frame rate x samples frames a second and blends them, so recording takes longer than
+the clips last.
+
+## Cinematics (campaths)
+
+The **Cinematics** tab makes camera moves through keyframes, timed to the demo. Record them with HLAE's
+`mirv_streams` as usual.
+
+### Sequence (build it with the demo paused)
+
+1. Pause the demo where the shot should start.
+2. Fly the camera to each spot (HLAE's `mirv_input camera` or the demo's free camera) and press **Add point here**
+   (or bind `dt2_campath seq add`). The demo stays paused; add as many points as the shot needs.
+3. Press **Generate**. DemoTools2 works out how many ticks the camera needs from each point to the next (from the
+   distance at **Camera speed** and the turn at **Turn speed**, never under **Shortest move**) and makes the real path,
+   starting at the tick you paused on. Unpause, or **Go to start**, to watch it.
+
+* Each point's **Ticks to next** can be set by hand (0 = auto). The list shows the tick every point is reached at.
+* **Cut to the next point** makes a new shot: the camera holds that view (for **Hold before a cut** ticks, or the
+  point's own ticks) and then jumps to the next point. One sequence can hold several shots.
+* Points go after the selected one, and can be moved up / down, set to the current view, or edited.
+* **Start at this tick** starts the path somewhere other than the first point's tick. **Edit path** turns a
+  generated or loaded path back into points.
+
+### Recording the path
+
+**Record the path** (Cinematics tab) records the current path to an MP4 the same way the Record tab records kills:
+through HLAE's recording and ffmpeg, with the same video settings (motion blur, frame rate, 4:3 stretch, quality -
+open **Video settings** to change them). It goes to the path's start, switches the path on, records to its end and
+saves `cinematic_<name>_<time>.mp4` (with game sound) in the same recordings folder. **Stop recording** stops it;
+the **Record path / stop** hotkey does both.
+
+### Hotkeys
+
+Build a shot without opening the menu: the **Hotkeys** list in the Cinematics tab (they work while CS2 is in front).
+Defaults: **F6** add point, **F7** remove point, **Shift+F7** clear points, **F8** generate, **Shift+F8** generate and
+preview, **F9** preview / stop, **F10** path on/off, **F11** go to the path's start. Start at this tick, add key (path
+keys), undo and POV HUD on/off can be given keys too. Click a key to change it (Esc: keep), **Unbind** removes it; **Unbind all** and **Default keys** reset the list. Each one
+confirms in CS2's console. Saved in `DemoTools2-hotkeys.cfg`.
+
+### Path keys (live)
+
+1. Fly the camera where the shot starts (HLAE's `mirv_input camera`, or the demo's free camera), at the demo moment
+   the shot starts, and press **Add key here** (or bind `dt2_campath add`).
+2. Move the demo on, move the camera, add the next key. Repeat for as many keys as the shot needs.
+3. Turn on **Play the path in the demo**, go back (**Go to start**) and play. **Preview** flies the path once in real
+   time, even with the demo paused.
+
+* **Smooth / Linear** for position, angles and field of view. Smooth never swings past a key, even with uneven timing.
+* **Ease in and out**: the camera starts and stops gently. **Hold**: stays on the first / last view outside the path.
+* **Even speed** re-times the keys so the camera travels at the same speed the whole way. **Length** stretches or
+  squeezes the whole path. **Start here** moves the path to the current demo moment.
+* **Look at a player**: the path moves the camera, and it always turns to face that player (eyes, chest or feet).
+* **Quick moves**: an orbit around what the camera looks at, or a dolly straight ahead, made from the current view.
+* The top-down map shows the path, the keys (click one to edit it) and the camera. Every key can be edited (time,
+  position, angles, field of view), set to the current view, or deleted. **Undo** reverts the last change.
+* Files go to `DemoTools2-campaths` next to the DLL in HLAE's campath XML format: `mirv_campath load` reads
+  DemoTools2's files, and DemoTools2 loads HLAE's.
+* While a path plays, the HUD and the first-person gun can be hidden (on by default).
+
+Console: `dt2_campath seq add|generate|start|undo|clear | add | enabled 0|1 | hold 0|1 | preview | evenspeed | duration <s> | startnow | remove <n> |
+undo | clear | print | save <name> | load <name> | list`.
+
+### mirv_pov (POV HUD)
+
+DemoTools2 has its own POV HUD (beta, written from scratch): in the **Cinematics** tab, **POV HUD
+(DemoTools2, test)**, or `dt2_pov 1`. The Record tab's **POV with HUD** view uses it. While it is on, the radar only
+shows the enemies the player's team has spotted. It follows the player watched when it is switched on; when that player dies,
+the spectator HUD comes back and the demo watches a living teammate, and next round it goes back to the player.
+
+HLAE builds that include `mirv_pov` show the watched player's own HUD on a GOTV demo, as in their POV demo. The
+Cinematics tab has switches for it (POV HUD, scoreboard sync, buy menu) when the loaded HLAE has the command. A path
+playing with **Hide the HUD** on hides the POV HUD too, and it comes back afterwards.
+
+## Camera and calcs (beta)
+
+> **Beta.** The camera tools may still change in later versions and may not work in every demo. The skins part doesn't
+> depend on them.
 
 ### Attach the camera to a part
 
@@ -374,7 +474,7 @@ does the same for players you give gloves to (and puts it back when you remove t
 * **Charms** appear when the game makes the gun: on a gun already on screen, after the next round or *Refresh now*.
 * **Agents** change about 1-2 seconds after you pick one (the model is loaded first).
 * **After a demo jump** the demo's own skins can show for about a second before yours are put back on.
-* **Camera** tools are a work in progress.
+* **Camera** tools are in beta.
 * **CS2 updates.** Field positions are read from the game itself at start-up, so most updates need nothing. A few
   function numbers are fixed. If an update moves one, the log says what failed, and the numbers can be changed in
   `DemoTools2.cfg` (the `index.` lines) without rebuilding.
@@ -385,8 +485,8 @@ DemoTools2 reads what it needs from the running game at start-up instead of rely
 update, anything it can't find (or that doesn't behave as expected) switches itself off and is listed in the
 **Status** tab, with the reason; the menu and every other part keep working. Typical outcome: the menu, saved
 skins and settings always work; a skin part (say knife models) may show *Off* until DemoTools2 is updated for that
-CS2 build; the camera (WIP) depends on HLAE and may switch off after an HLAE update. If a part crashes, it stays off
-for the next session (safe mode) and the Status tab says so. *Open DemoTools2 folder* in that tab opens the logs.
+CS2 build; the camera (beta) depends on HLAE and may switch off after an HLAE update. If a part crashes, it stays off
+for the next session (safe mode) and the Status tab says so. *Open DemoTools2 folder* and *Open the log* on that page take you to the logs.
 
 ## Something wrong?
 

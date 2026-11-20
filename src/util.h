@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#define DEMOTOOLS2_VERSION "1.8.4"
+#define DEMOTOOLS2_VERSION "2.0"
 
 // ---- logging: DemoTools2.log next to the DLL, and the game console when tier0 exports Msg ----
 void LogInit(HMODULE self);
@@ -45,6 +45,11 @@ extern volatile int g_gameBuild;              // CS2 build number (0 unknown), f
 // True when [p, p+size) is committed, readable memory. Used before following pointers we found by layout,
 // so a wrong guess after a game update logs an error instead of crashing CS2.
 bool Readable(const void* p, size_t size = 8);
+double NowMs();                                   // a precise clock, in milliseconds
+void SlowCheck(const char* what, double ms);      // logs (at most every few seconds) when DemoTools2 took too long in a frame
+// Time spent per part, reported in the log every 5 s while it adds up to something noticeable.
+void PerfAdd(const char* part, double ms);
+struct PerfScope { const char* part; double t0; explicit PerfScope(const char* p) : part(p), t0(NowMs()) {} ~PerfScope() { PerfAdd(part, NowMs() - t0); } };
 
 template <class T> inline T& At(void* base, ptrdiff_t off) { return *reinterpret_cast<T*>(reinterpret_cast<uint8_t*>(base) + off); }
 template <class T> inline T Get(const void* base, ptrdiff_t off) {

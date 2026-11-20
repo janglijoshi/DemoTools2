@@ -91,6 +91,21 @@ bool AnimDataSwitched();                     // UseLocalAnimData changed it and 
 // Demo version vs game version, as CS2 compares them for TrueView. 1: same, 0: older/other version, -1: unknown.
 int DemoIsCurrent(int* demoVersion = nullptr, int* gameVersion = nullptr);
 bool PrecacheModel(const char* path);        // load a model the demo didn't (as the game does for preview gloves)
+bool PrecacheResource(const char* path, uint32_t type);   // same for any resource type ('vpcf' = 0x66637076)
+
+bool ViewPosition(float out[3], float angles[3] = nullptr);   // the camera last frame (needs the view hook), false if unknown
+float ViewFov();
+// The client's "local player" slots and its "I am the GOTV viewer" flag (for DemoTools2's own POV HUD).
+struct LocalSlots {
+    void** controllers = nullptr;   // [split-screen slot] -> local CCSPlayerController
+    void** pawns = nullptr;         // [slot] -> a per-slot object (not the pawn; not used)
+    uint8_t* hltv = nullptr;        // 1 while the client watches as GOTV
+    ptrdiff_t isLocal = 0;          // CBasePlayerController::m_bIsLocalPlayerController
+    ptrdiff_t isHltv = 0;           // CBasePlayerController::m_bIsHLTV
+};
+const LocalSlots& Locals();         // found once; fields stay nullptr / 0 if not found
+bool HasModuleString(const char* module, const char* text);   // a loaded DLL contains this text (e.g. an HLAE command name)
+std::string GameFolder();                    // ...\game\csgo\ with the trailing backslash
 void* GloveEntity(void* pawn);               // the glove model entity the game made for this player, if any
 bool CanSeeGloveEntity();
 uint64_t MeshGroupMask(void* entity);        // which meshes of the model are shown (bit 0: current model, bit 1: legacy)
@@ -117,6 +132,8 @@ bool SetBodyGroupIndex(void* entity, const char* group, int choice);
 // Returns the previous choice, or -1 if not possible.
 int SetNetworkedBodyGroup(void* entity, const char* group, int choice);
 const char* ModelName(void* entity);         // current model path, or nullptr
+bool ModelLoaded(void* entity);              // its model is really loaded (not just named)
+void* ModelData(void* entity);               // the loaded model's data (nullptr if none)
 
 // ---- for the camera (calc) tools
 bool SchemaField(const char* cls, const char* field, ptrdiff_t& out);   // quiet schema lookup
