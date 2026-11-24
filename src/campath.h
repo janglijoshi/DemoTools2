@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include <cstdint>
 #include <mutex>
@@ -96,6 +96,11 @@ void StartNow();                      // move the whole path so it starts at the
 void Orbit(const float center[3], float radius, float height, float degrees, float seconds, int count);
 void Dolly(float distance, float seconds);   // from the current view, straight ahead
 void Preview();                       // play the path once in real time, from its start (demo may be paused)
+// Freeze path record: the path is flown on its own clock while the demo stands still. step > 0: each frame moves the
+// path on by that many seconds (fixed-step recording: 1 / (fps x blur samples)); 0: real time.
+void StartFrozen(double step);
+void StopFrozen();
+bool FrozenDone();                    // the path has reached its last key
 void StopPreview();
 void UpdateKey(int index, const Key& k);    // edited in the window (re-sorts; no undo step - call SaveUndoStep first)
 void SaveUndoStep();

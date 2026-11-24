@@ -13,8 +13,9 @@ set(IMGUI_SRC
   third_party/imgui/backends/imgui_impl_win32.cpp third_party/imgui/backends/imgui_impl_opengl2.cpp)
 
 add_library(DemoTools2 SHARED
-  src/main.cpp src/game.cpp src/skins.cpp src/menu.cpp src/render.cpp src/util.cpp src/calc.cpp src/console.cpp src/ui.cpp src/campath.cpp src/pov.cpp src/demoscan.cpp src/record.cpp src/hotkeys.cpp
+  src/main.cpp src/game.cpp src/skins.cpp src/menu.cpp src/render.cpp src/util.cpp src/calc.cpp src/console.cpp src/ui.cpp src/campath.cpp src/pov.cpp src/demoscan.cpp src/record.cpp src/hotkeys.cpp src/capture.cpp src/viewmodel.cpp src/oldanim.cpp src/oldfile.cpp
   ${IMGUI_SRC})
 target_include_directories(DemoTools2 PRIVATE src third_party/imgui)
 target_compile_definitions(DemoTools2 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX NDEBUG _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(DemoTools2 PRIVATE opengl32 dwmapi imm32 shell32 comdlg32)
+target_link_libraries(DemoTools2 PRIVATE opengl32 dwmapi imm32 shell32 comdlg32 d3d11 dxgi ole32 uuid)
+

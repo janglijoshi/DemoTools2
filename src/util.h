@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include <windows.h>
 #include <cstdint>
@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#define DEMOTOOLS2_VERSION "2.0"
+#define DEMOTOOLS2_VERSION "2.1"
 
 // ---- logging: DemoTools2.log next to the DLL, and the game console when tier0 exports Msg ----
 void LogInit(HMODULE self);

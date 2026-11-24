@@ -1,5 +1,93 @@
 # Changelog
 
+## 2.1 (2026-11-24)
+
+HLAE-update proof. HLAE still loads DemoTools2 (`mirv_loadlibrary`), but after that nothing depends on HLAE being
+updated for the newest CS2.
+
+### New
+- **Two recorders: HLAE or DTRecord.** Pick one under **Recorder** in the Record tab (it also applies to *Record the
+  path* and *Record from here*); the one you pick is used, and the choice is remembered.
+- **DTRecord**, DemoTools2's own recorder. It doesn't use HLAE's recording at all:
+  - it reads the picture CS2 shows from DirectX 11 and encodes it with ffmpeg;
+  - **picture and sound in one go** (default, *Sound: With the picture*): each clip plays once in real time, every
+    frame is timed, the video is built at a constant frame rate from them, CS2's own sound is recorded at the same
+    time on the same clock (Windows' per-process loopback, Windows 10 version 2004 or newer), and both are joined
+    into one MP4. Motion blur blends the frames CS2 shows in each video frame's time, so it is smoother the higher
+    CS2's FPS;
+  - *Sound: Second pass*: the picture at a fixed game step with DTRecord's own exact motion blur (4-32 samples),
+    then the clip again in real time for the sound; **Game sound** off: picture only.
+- With **HLAE** picked:
+  - if HLAE takes the commands but records nothing (an HLAE build not updated for this CS2), DemoTools2 notices
+    within a few seconds, stops and tells you to switch to DTRecord;
+  - if CS2 crashes while HLAE starts recording, the next session starts on DTRecord and the window says why.
+- **Record from here** on every Camera tab (with the folder it saves to and **Open folder**), and
+  `dt2_record start [name]` / `dt2_record stop`: records the view from now until you stop it (DemoTools2 camera,
+  campath or free camera), with the chosen recorder.
+- **Points on the mount** (Camera → Attach to a part): the camera stays bolted to the part - the gun muzzle, a hand,
+  the head - and glides between positions you set at moments of the demo (forward / right / up, pitch / yaw / roll,
+  FOV). Pause, place the camera, **Add point here**; go to a later moment, place it again, add another. Each point can
+  be loaded back into the sliders, jumped to, updated or deleted.
+- **Freeze path record** (Cinematics → Record the path): the demo stays paused at the current moment and the whole
+  campath is flown and recorded through the frozen scene. The path runs on its own clock, one step per recorded frame
+  (1 / (fps x blur samples)), so it is as smooth as a normal recording; no sound. Saved as `freeze_<name>_<time>.mp4`.
+- **Stay on this gun** (Camera → Attach to a part, gun parts, on by default): the camera stays on the gun that was in
+  their hand when you pressed Attach camera, also when it is holstered on their back while they hold another weapon.
+  If a holstered gun has no working attachment, the gun's own position is used (and logged). Calc: `keptgun`.
+- Record tab: **Not this demo? Choose the file** under the demo found by itself; a file you pick stays until the next
+  demo starts.
+- Status shows **HLAE** (what DemoTools2 uses it for) and **DTRecord**.
+- **Viewmodel** tab on the Camera page - **Position and FOV:** your own viewmodel (left/right, back/forward, down/up,
+  FOV) for everyone's first-person gun in a demo, with presets (CS2 default, Classic, Wide, Centered) and an option
+  to go past CS2's limits. Off, every player keeps their own, as recorded. Console: `dt2_viewmodel`.
+
+### Changed
+- The camera's view hook is also found when an HLAE build changes a little more of CS2's view code than today's
+  builds do.
+- ffmpeg is also found in DemoTools2's folder and on PATH.
+
+### Fixed
+- **CS2 crashed right after loading DemoTools2 with a current HLAE** (crash in `AfxHookSource2.dll` while Panorama
+  draws). To find DirectX's Present, DTRecord made a small test device and swap chain; HLAE hooks device and swap
+  chain creation for the whole process, took them for the game's, and used them after DemoTools2 had released them.
+  With HLAE loaded, DTRecord now never creates anything: it finds the swap chain CS2 already has.
+- **POV HUD: the gun jumped.** With the POV HUD on, CS2 thinks the watched player is you, so it placed their gun with
+  *your* viewmodel settings in one part of the frame and with theirs in the other. DemoTools2 now gives CS2 the
+  player's own position and FOV while the POV HUD swaps.
+- **POV HUD and the gun / hands.** The POV HUD learned when CS2 draws the frame only once per session. When that moves
+  (a CS2 update, or HLAE 2.193's stream preview and stream actions, which draw extra views in a frame), the swap
+  could land where CS2 draws the gun and hands. It is now re-learned all the time, and every view CS2 sets up uses
+  the demo's own state, also a second view in the same frame.
+- **POV HUD after a CS2 update.** The two controller fields it changes are now taken from CS2's own schema (by name)
+  instead of only from code patterns, and before it changes anything it checks that the data really is what it
+  should be. If not, it stays off and says why, instead of writing to the wrong place.
+- **Switching the POV HUD off** now reloads the view at the current tick, so a first-person model or screen effect
+  CS2 made while the POV HUD was on doesn't stay. **Reload view** (Cinematics tab) does the same at any time.
+- The POV HUD waits, and says so in its status, while CS2 isn't running DemoTools2's view hook, instead of swapping
+  without it.
+- **HLAE recordings stopped after one clip** with "HLAE didn't record ... no video in the take folder". DemoTools2
+  checked the take folder's file sizes as Windows lists them, which stay at 0 while HLAE's ffmpeg is still writing.
+  It now reads the real size, and if nothing is there at the end of a clip it waits up to 30 s for HLAE before
+  calling it broken. HLAE's video gets up to 10 minutes to finish (was 2).
+- **Recording from the Camera tab saved nothing when the demo was paused.** Stop recording set the end at the current
+  tick, and the take only ended once a later tick came; it now ends on Stop, paused or not.
+- **Sound lost when joining failed.** If ffmpeg couldn't join a clip's picture and sound, the picture was saved alone
+  and the sound deleted. The sound is now kept next to the clip, ffmpeg's message goes to `<clip>.mp4.join.log`, and
+  the status says so (DTRecord and HLAE). A single clip is no longer "joined" into a second copy.
+- **The Record tab found the wrong demo, or none, for old demos.** CS2 often doesn't keep an old demo file open, and
+  the paths found in its memory include every demo played that session; old demos often carry no Steam IDs, so all
+  scored the same. Now a file must be on the map CS2 has loaded and long enough for the current tick, players are
+  matched by Steam ID and by name, the same file found under two spellings counts once, and the pick doesn't flip
+  between equal candidates.
+- **CS2 crashed right after a demo jump** ("reading the entity list"): a player CS2 was tearing down had an invalid
+  model-name pointer (`0xffff...`). Entity, name and model pointers are now checked for a possible address before
+  they are read.
+
+### Notes
+- DTRecord needs CS2 in DirectX 11 mode (the default). With `-vulkan`, record with HLAE.
+- While DTRecord records sound, `snd_mute_losefocus` is set to 0 so CS2's sound keeps playing while the DemoTools2
+  window has the focus.
+
 ## 2.0 (2026-11-20)
 
 DemoTools2 2.0 adds two new pages, **Record** and **Cinematics**, and a redesigned window. It has five pages:
@@ -68,6 +156,9 @@ Campaths made inside the demo.
 - The playing demo is found even after CS2 closes the file, and kills are found in demos without round events.
 - The **Environment** page (weather) and the old-animations test are not in 2.0. Their settings in `DemoTools2.cfg`
   are ignored. The start-up checks they needed are gone too, so there is less to break after a CS2 update.
+
+### Licence
+- DemoTools2 is now open source under the **MIT License** (it was source-available, all rights reserved).
 
 ### Upgrading
 Replace `DemoTools2.dll` and keep the rest of the folder. Your skins (`DemoTools2.cfg`), presets, campaths and hotkeys

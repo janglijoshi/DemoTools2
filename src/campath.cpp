@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // Campaths (see campath.h): keyframes, smooth interpolation, timing tools, HLAE campath files, and mirv_pov.
 #include "campath.h"
 #include "console.h"
@@ -28,6 +28,9 @@ static std::deque<std::vector<Key>> g_undo;   // newest at the back
 static Live g_live;
 static bool g_previewing = false;
 static double g_previewStart = 0, g_previewFrom = 0;
+static bool g_frozen = false, g_frozenDone = false;   // Freeze path record (see campath.h)
+static double g_frozenFrom = 0, g_frozenStep = 0, g_frozenWall = 0;
+static long long g_frozenFrames = 0;
 static std::vector<std::string> g_commands;   // run on the game thread (AfterFrame)
 
 static const double kMinGap = 0.02;   // two keys never closer in time than this
@@ -149,7 +152,10 @@ bool Evaluate(double now, const float* aimAt, float pos[3], float ang[3], float&
         return false;
     }
     double t;
-    if (g_previewing) {
+    if (g_frozen) {   // the demo stands still; the path runs on its own clock
+        t = g_frozenFrom + (g_frozenStep > 0 ? g_frozenFrames * g_frozenStep : (NowMs() / 1000.0) - g_frozenWall);
+        if (t >= keys.back().t) { t = keys.back().t; g_frozenDone = true; }
+    } else if (g_previewing) {
         t = g_previewFrom + ((NowMs() / 1000.0) - g_previewStart);
         if (t > keys.back().t) { g_previewing = false; g_live.previewing = false; g_live.note = "Preview finished."; return false; }
     } else {
@@ -169,7 +175,7 @@ bool Evaluate(double now, const float* aimAt, float pos[3], float ang[3], float&
     if (set.aim == 1 && aimAt) LookAt(pos, aimAt, ang);
     g_live.playing = true;
     g_live.pathTime = t - keys.front().t;
-    g_live.note = g_previewing ? "Preview (real time)." : "Playing.";
+    g_live.note = g_frozen ? "Freeze path record." : g_previewing ? "Preview (real time)." : "Playing.";
     return Remember(true, pos, ang, fov);
 }
 
@@ -179,6 +185,7 @@ void AfterFrame(bool playing) {
     {
         std::lock_guard<std::mutex> g(lock);
         cmds.swap(g_commands);
+        if (g_frozen && g_frozenStep > 0) ++g_frozenFrames;   // one frame drawn: the frozen path moves one step
         hideHud = set.hideHud;
         hideVm = set.hideViewmodel;
     }
@@ -387,6 +394,25 @@ void Preview() {
     g_previewing = true;
     g_previewStart = (NowMs() / 1000.0);
     g_previewFrom = keys.front().t;
+}
+void StartFrozen(double step) {
+    std::lock_guard<std::mutex> g(lock);
+    if (keys.size() < 2) return;
+    g_previewing = false;
+    g_frozen = true;
+    g_frozenDone = false;
+    g_frozenFrom = keys.front().t;
+    g_frozenStep = step;
+    g_frozenFrames = 0;
+    g_frozenWall = NowMs() / 1000.0;
+}
+void StopFrozen() {
+    std::lock_guard<std::mutex> g(lock);
+    g_frozen = false;
+}
+bool FrozenDone() {
+    std::lock_guard<std::mutex> g(lock);
+    return g_frozen && g_frozenDone;
 }
 void StopPreview() {
     std::lock_guard<std::mutex> g(lock);

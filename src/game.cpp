@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #include "game.h"
 #include <cctype>
 #include <cmath>
@@ -86,13 +86,13 @@ static bool ReadSchema() {
     uint8_t** scopes = Get<uint8_t**>(sys, 0x198);
     if (scopeCount == 0 || scopeCount > 256 || !Readable(scopes, scopeCount * 8)) { Log("schema: bad scope table"); return false; }
 
-    for (uint64_t i = 0; i < scopeCount; ++i) {
-        uint8_t* scope = scopes[i];
-        if (!Readable(scope, 0x480)) continue;
-        if (strncmp((const char*)scope + 8, "client.dll", 11) != 0) continue;
+    // client.dll first (its classes win when two modules declare the same name), then every other module's classes
+    // that client.dll doesn't have (e.g. the model data structures, for reading a model's skeleton).
+    auto readScope = [&](uint8_t* scope, bool onlyNew) -> int {
         uint16_t n = Get<uint16_t>(scope, 0x470);
         uint8_t* entries = Get<uint8_t*>(scope, 0x478);
-        if (!Readable(entries, (size_t)n * 0x18)) { Log("schema: bad class table"); return false; }
+        if (!Readable(entries, (size_t)n * 0x18)) return -1;
+        int added = 0;
         for (uint16_t j = 0; j < n; ++j) {
             uint8_t* declared = Get<uint8_t*>(entries, j * 0x18 + 0x10);
             if (!Readable(declared, 0x28)) continue;
@@ -100,6 +100,7 @@ static bool ReadSchema() {
             if (!Readable(cls, 0x38)) continue;
             const char* name = Get<const char*>(cls, 0x8);
             if (!Readable(name, 1)) continue;
+            if (onlyNew && g_schema.count(name)) continue;
             SchemaClass sc;
             sc.size = Get<uint32_t>(cls, 0x20);
             uint16_t nf = Get<uint16_t>(cls, 0x24);
@@ -111,12 +112,29 @@ static bool ReadSchema() {
                 }
             }
             g_schema[name] = std::move(sc);
+            ++added;
         }
+        return added;
+    };
+    bool client = false;
+    for (uint64_t i = 0; i < scopeCount; ++i) {
+        uint8_t* scope = scopes[i];
+        if (!Readable(scope, 0x480) || strncmp((const char*)scope + 8, "client.dll", 11) != 0) continue;
+        if (readScope(scope, false) < 0) { Log("schema: bad class table"); return false; }
+        client = true;
         Log("schema: %u classes from client.dll", (unsigned)g_schema.size());
-        return !g_schema.empty();
+        break;
     }
-    Log("schema: client.dll scope not found");
-    return false;
+    if (!client) { Log("schema: client.dll scope not found"); return false; }
+    int others = 0;
+    for (uint64_t i = 0; i < scopeCount; ++i) {
+        uint8_t* scope = scopes[i];
+        if (!Readable(scope, 0x480) || !strncmp((const char*)scope + 8, "client.dll", 11)) continue;
+        const int n = readScope(scope, true);
+        if (n > 0) others += n;
+    }
+    Log("schema: %d more classes from other modules", others);
+    return !g_schema.empty();
 }
 
 static int g_schemaMisses = 0;
@@ -199,6 +217,13 @@ static Text ClientText() {
         if (!std::memcmp(sec[i].Name, ".rdata", 6)) { t.rdata = t.base + sec[i].VirtualAddress; t.rdataSize = sec[i].Misc.VirtualSize; }
     }
     return t;
+}
+
+bool ClientCode(uint8_t*& start, size_t& size) {
+    const Text t = ClientText();
+    start = t.start;
+    size = t.size;
+    return start && size;
 }
 
 // "48 8B ?? 05" style pattern; returns the first match or nullptr (and logs if there is more than one).
@@ -614,7 +639,7 @@ static void FindMeshMaskHandler(const Text& t) {
 
 static uint8_t* ModelStateOf(void* entity) {
     uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
-    return (uintptr_t)node < 0x10000 ? nullptr : node + O.skeleton_modelState;
+    return !LooksLikePtr(node) ? nullptr : node + O.skeleton_modelState;
 }
 
 uint64_t MeshGroupMask(void* entity) {
@@ -846,7 +871,7 @@ bool ModelLoaded(void* entity) {
     if (oModel < 0 && !SchemaField("CModelState", "m_hModel", oModel)) oModel = 0;
     if (oModel <= 0 || !entity) return false;
     uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
-    if ((uintptr_t)node < 0x10000) return false;
+    if (!LooksLikePtr(node)) return false;
     void* h = Get<void*>(node, O.skeleton_modelState + oModel);
     return h && Readable(h, 8) && *(void**)h != nullptr;
 }
@@ -856,7 +881,7 @@ void* ModelData(void* entity) {
     if (oModel < 0 && !SchemaField("CModelState", "m_hModel", oModel)) oModel = 0;
     if (oModel <= 0 || !entity) return nullptr;
     uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
-    if ((uintptr_t)node < 0x10000) return nullptr;
+    if (!LooksLikePtr(node)) return nullptr;
     void* h = Get<void*>(node, O.skeleton_modelState + oModel);
     if (!h || !Readable(h, 8)) return nullptr;
     void* d = *(void**)h;
@@ -864,10 +889,11 @@ void* ModelData(void* entity) {
 }
 
 const char* ModelName(void* entity) {
+    if (!LooksLikePtr(entity)) return nullptr;
     uint8_t* node = Get<uint8_t*>(entity, O.ent_pGameSceneNode);
-    if ((uintptr_t)node < 0x10000) return nullptr;
+    if (!LooksLikePtr(node)) return nullptr;
     const char* name = Get<const char*>(node, O.skeleton_modelState + O.modelState_ModelName);
-    return (uintptr_t)name < 0x10000 ? nullptr : name;
+    return !LooksLikePtr(name) ? nullptr : name;
 }
 
 uint32_t StringToken(const char* s) {
@@ -1158,6 +1184,14 @@ bool InstallViewHook(ViewValueFn value, ViewApplyFn apply) {
     // lea rdx,[rbx+angles]; lea rcx,[rbx+origin]; call CalcDemoViewOverride; jmp
     // (the 16 bytes before it are the IsPlayingDemo call that HLAE rewrites, so they are not part of the pattern)
     uint8_t* p = FindPattern(t, "0F 57 FF 84 C0 74 ?? 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F 2F C7 76 ?? 48 8D 93 ?? ?? ?? ?? 48 8D 8B ?? ?? ?? ?? E8 ?? ?? ?? ?? EB");
+    if (!p) {
+        // Without its first 7 bytes (xorps / test / je): if an HLAE build patches a little more than the IsPlayingDemo
+        // call in front of it, the rest is still found. Only bytes from the lea on are used and changed below.
+        if (uint8_t* q = FindPattern(t, "48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 0F 2F C7 76 ?? 48 8D 93 ?? ?? ?? ?? 48 8D 8B ?? ?? ?? ?? E8 ?? ?? ?? ?? EB")) {
+            p = q - 7;
+            Log("camera: view hook found without its first bytes (changed by HLAE or another tool) - using it");
+        }
+    }
     if (!p) { Log("camera: view hook NOT found - the DemoTools2 camera can't take over the view in this CS2 version"); return false; }
     uint8_t* lea = p + 7;
     uint8_t* call = p + 14;
@@ -1304,14 +1338,16 @@ void* IdentityAt(int index) {
 
 void* EntityAt(int index) {
     void* id = IdentityAt(index);
-    return id ? Get<void*>(id, 0) : nullptr;
+    void* e = id ? Get<void*>(id, 0) : nullptr;
+    return LooksLikePtr(e) ? e : nullptr;
 }
 
 void* FromHandleExact(uint32_t handle) {
     if (handle == 0xffffffffu || handle == 0xfffffffeu) return nullptr;
     void* id = IdentityAt(handle & 0x7fff);
     if (!id || Get<uint32_t>(id, 0x10) != handle) return nullptr;
-    return Get<void*>(id, 0);
+    void* e = Get<void*>(id, 0);
+    return LooksLikePtr(e) ? e : nullptr;
 }
 
 void* FromHandle(uint32_t handle) {
@@ -1319,13 +1355,16 @@ void* FromHandle(uint32_t handle) {
     void* id = IdentityAt(handle & 0x7fff);
     if (!id) return nullptr;
     if ((Get<uint32_t>(id, 0x10) & 0x7fff) != (handle & 0x7fff)) return nullptr;
-    return Get<void*>(id, 0);
+    void* e = Get<void*>(id, 0);
+    return LooksLikePtr(e) ? e : nullptr;
 }
 
 const char* DesignerName(void* entity) {
+    if (!LooksLikePtr(entity)) return nullptr;
     void* id = Get<void*>(entity, O.ent_pEntity);
-    if (!id) return nullptr;
-    return Get<const char*>(id, O.identity_designerName);
+    if (!LooksLikePtr(id)) return nullptr;
+    const char* n = Get<const char*>(id, O.identity_designerName);
+    return LooksLikePtr(n) ? n : nullptr;
 }
 
 // The game folder (...\game\csgo\), from where client.dll is.
@@ -1342,4 +1381,169 @@ uint32_t HandleOf(void* entity) {
     void* id = Get<void*>(entity, O.ent_pEntity);
     return id ? Get<uint32_t>(id, 0x10) : 0xffffffffu;
 }
+// ---- sequences (old-style animations)
+// The script function CBaseAnimGraph_API::PlaySequence: its entry in the script binding table holds the name and,
+// 9 pointers on, a small function that calls C_BaseAnimGraph::PlaySequence(entity, "name") as its second call.
+using PlaySequenceFn = bool (*)(void*, const char*);
+static PlaySequenceFn g_playSequence = nullptr;
+static ptrdiff_t g_animModeFlag = 0;
+
+static void FindPlaySequence(const Text& t) {
+    uint8_t* name = FindString(t, "CBaseAnimGraph_API::PlaySequence");
+    auto nt = (IMAGE_NT_HEADERS64*)(t.base + ((IMAGE_DOS_HEADER*)t.base)->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; name && !g_playSequence && i < nt->FileHeader.NumberOfSections; ++i) {
+        if (std::memcmp(sec[i].Name, ".data", 6)) continue;
+        uint8_t* d = t.base + sec[i].VirtualAddress;
+        const size_t n = sec[i].Misc.VirtualSize;
+        for (size_t k = 0; k + 10 * 8 <= n; k += 8) {
+            if (*(uint8_t**)(d + k) != name) continue;
+            uint8_t* thunk = *(uint8_t**)(d + k + 9 * 8);
+            if (thunk < t.start || thunk >= t.start + t.size) continue;
+            int calls = 0;
+            for (uint8_t* q = thunk; q < thunk + 0x50; ++q)
+                if (uint8_t* c = CallTarget(t, q)) {
+                    if (++calls == 2) { g_playSequence = (PlaySequenceFn)c; break; }
+                }
+            break;
+        }
+    }
+    Log(g_playSequence ? "sequences: PlaySequence found" : "sequences: PlaySequence NOT found");
+}
+static void FindAnimModeFlag(const Text& t);
+// Found the first time old animations are switched on (nothing of this runs for anyone who doesn't use them).
+static void FindSequenceFunctions() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    Step step("old-anims: finding");
+    const Text t = ClientText();
+    if (!t.start) return;
+    FindPlaySequence(t);
+    FindAnimModeFlag(t);
+}
+bool CanPlaySequence() { FindSequenceFunctions(); return g_playSequence != nullptr && g_animModeFlag != 0; }
+
+// Which animation system an entity uses: CBaseAnimGraphController::m_nAnimationAlgorithm, in the entity's body
+// component (C_BaseEntity::m_CBodyComponent -> CBodyComponentBaseAnimGraph::m_animationController). When the network
+// changes it, its callback "AG2_OnAnimGraphDefinitionOrModeChanged" only sets a flag on the entity
+// (mov byte [rcx+X], 1; ret) and the game rebuilds the animation set-up later in the frame.
+static void FindAnimModeFlag(const Text& t) {
+    if (uint8_t* str = FindString(t, "AG2_OnAnimGraphDefinitionOrModeChanged"))
+        ForEachLea(t, str, [&](uint8_t* ins) {
+            if (g_animModeFlag || ins[0] != 0x48 || ins[2] != 0x15) return;
+            for (uint8_t* q = ins - 7; q > ins - 0x60; --q)
+                if (q[0] == 0x48 && q[1] == 0x8D && q[2] == 0x05) {
+                    uint8_t* h = LeaTarget(q);
+                    if (h >= t.start && h < t.start + t.size && h[0] == 0xC6 && h[1] == 0x81 && h[6] == 0x01 && h[7] == 0xC3)
+                        g_animModeFlag = *(int32_t*)(h + 2);
+                    break;
+                }
+        });
+    Log(g_animModeFlag ? "animation mode switch found (flag at +0x%x)" : "animation mode switch NOT found", (unsigned)g_animModeFlag);
+}
+static uint8_t* AnimAlgorithmField(void* entity) {
+    static ptrdiff_t oBody = -1, oCtrl = -1, oAlg = -1;
+    if (oBody < 0) {
+        if (!SchemaField("C_BaseEntity", "m_CBodyComponent", oBody)) oBody = 0;
+        if (!SchemaField("CBodyComponentBaseAnimGraph", "m_animationController", oCtrl)) oCtrl = 0;
+        if (!SchemaField("CBaseAnimGraphController", "m_nAnimationAlgorithm", oAlg)) oAlg = 0;
+        Log("animation mode: body +0x%x, controller +0x%x, algorithm +0x%x", (unsigned)oBody, (unsigned)oCtrl, (unsigned)oAlg);
+    }
+    if (oBody <= 0 || oCtrl <= 0 || oAlg <= 0 || !entity) return nullptr;
+    uint8_t* body = Get<uint8_t*>(entity, oBody);
+    if (!body || !Readable(body + oCtrl + oAlg, 4)) return nullptr;
+    return body + oCtrl + oAlg;
+}
+int AnimAlgorithm(void* entity) {
+    uint8_t* f = AnimAlgorithmField(entity);
+    return f ? *(int32_t*)f : -1;
+}
+bool SetAnimAlgorithm(void* entity, int value) {
+    uint8_t* f = AnimAlgorithmField(entity);
+    if (!f || !g_animModeFlag || !Readable((uint8_t*)entity + g_animModeFlag, 1)) return false;
+    *f = (uint8_t)value;                                 // the low byte only: safe whether the field is 1 or 4 bytes
+    *((uint8_t*)entity + g_animModeFlag) = 1;            // what the network's change callback does
+    return true;
+}
+bool PlaySequence(void* entity, const char* name) { return g_playSequence && entity && name ? g_playSequence(entity, name) : false; }
+
+// ---- DemoTools2's own files (addons)
+// CS2's file system (VFileSystem017 in filesystem_stdio.dll) can be told to also look in another folder:
+//   AddSearchPath(path, pathID, addType, priority, unknown)   - found by its shape: the only function in the table that
+//   reads both stack arguments as  mov edi,[rsp+90h] / mov eax,[rsp+98h].
+// DemoTools2 adds its folders at the END of the "GAME" path: CS2 only takes files from there that it doesn't have
+// itself, so nothing of the game's is ever replaced, and nothing is written anywhere - it lasts until CS2 closes.
+using AddSearchPathFn = void (*)(void*, const char*, const char*, int, int, int);
+// FileExists(name, pathID): the vtable function that uses the text "CBaseFileSystem::FileExists" (its profiling name).
+using FileExistsFn = bool (*)(void*, const char*, const char*);
+static void* g_fs = nullptr;
+static FileExistsFn g_fileExists = nullptr;
+static void FindFileExists() {
+    static bool tried = false;
+    if (tried) return;
+    tried = true;
+    if (!g_fs) g_fs = Interface("filesystem_stdio.dll", "VFileSystem017");
+    HMODULE m = GetModuleHandleA("filesystem_stdio.dll");
+    if (!g_fs || !m) return;
+    auto base = (uint8_t*)m;
+    auto nt = (IMAGE_NT_HEADERS64*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    uint8_t* str = nullptr;
+    static const char kName[] = "CBaseFileSystem::FileExists";
+    for (int i = 0; i < nt->FileHeader.NumberOfSections && !str; ++i) {
+        if (std::memcmp(sec[i].Name, ".rdata", 6)) continue;
+        uint8_t* d = base + sec[i].VirtualAddress;
+        for (size_t k = 1; k + sizeof(kName) <= sec[i].Misc.VirtualSize; ++k)
+            if (d[k] == 'C' && d[k - 1] == 0 && !std::memcmp(d + k, kName, sizeof(kName))) { str = d + k; break; }
+    }
+    if (!str) return;
+    void** vt = *(void***)g_fs;
+    for (int i = 10; i < 60 && !g_fileExists; ++i) {
+        uint8_t* f = (uint8_t*)vt[i];
+        if (!Readable(f, 0x300)) break;
+        for (int k = 0; k + 7 <= 0x300; ++k)
+            if ((f[k] == 0x48 || f[k] == 0x4C) && f[k + 1] == 0x8D && (f[k + 2] & 0xC7) == 0x05 && f + k + 7 + *(int32_t*)(f + k + 3) == str) {
+                g_fileExists = (FileExistsFn)f;
+                Log("file system: FileExists found (function %d)", i);
+                break;
+            }
+    }
+}
+int FileExists(const char* name, const char* pathId) {
+    FindFileExists();
+    if (!g_fileExists) return -1;
+    return g_fileExists(g_fs, name, pathId) ? 1 : 0;
+}
+
+bool AddSearchPath(const char* dir, const char* pathId, bool atHead) {
+    static void* fs = nullptr;
+    static AddSearchPathFn add = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        fs = Interface("filesystem_stdio.dll", "VFileSystem017");
+        g_fs = fs;
+        if (fs) {
+            void** vt = *(void***)fs;
+            for (int i = 10; i < 120 && !add; ++i) {
+                uint8_t* f = (uint8_t*)vt[i];
+                if (!Readable(f, 0x40)) break;
+                static const uint8_t a[] = {0x8B, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00}, b[] = {0x8B, 0xBC, 0x24, 0x90, 0x00, 0x00, 0x00};
+                bool ha = false, hb = false;
+                for (int k = 0; k + 7 <= 0x40; ++k) {
+                    if (!std::memcmp(f + k, a, 7)) ha = true;
+                    if (!std::memcmp(f + k, b, 7)) hb = true;
+                }
+                if (ha && hb) { add = (AddSearchPathFn)f; Log("file system: AddSearchPath found (function %d)", i); }
+            }
+        }
+        if (!add) Log("file system: AddSearchPath NOT found - DemoTools2's own files can't be used");
+    }
+    if (!add || !dir || !*dir) return false;
+    add(fs, dir, pathId, atHead ? 0 /* PATH_ADD_TO_HEAD */ : 1 /* PATH_ADD_TO_TAIL */, 0, 0);
+    Log("file system: CS2 also looks in %s for %s files (%s)", dir, pathId, atHead ? "first" : "only ones it doesn't have itself");
+    return true;
+}
+
 }  // namespace Game

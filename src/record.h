@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include <cstdint>
 #include <mutex>
@@ -7,8 +7,10 @@
 #include <vector>
 #include "demoscan.h"
 
-// Kill recorder: scans the demo file for a player's kills, then goes to each one and records it with HLAE's
-// mirv_streams (ffmpeg, optional motion blur through HLAE's sampler), one MP4 per clip and/or all clips joined.
+// Kill recorder: scans the demo file for a player's kills, then goes to each one and records it, one MP4 per clip
+// and/or all clips joined. Two recorders, chosen in the Record tab: HLAE (mirv_streams: ffmpeg, motion blur through
+// HLAE's sampler, game sound as WAV) or DTRecord, DemoTools2's own (capture.h: frames from DirectX 11, its own motion
+// blur, game sound recorded with it) - for when HLAE's recording isn't updated for the newest CS2.
 namespace Record {
 
 struct Clip {
@@ -36,7 +38,10 @@ struct Settings {
     bool stretch = true;          // game in 4:3 (or 5:4): stretch the video to 16:9 (1440x1080 -> 1920x1080)
     bool clips = true, combined = true;
     std::string outDir;           // "" = <DemoTools2>\recordings\<demo name>
-    std::string ffmpeg;           // "" = HLAE's own ffmpeg (found next to HLAE)
+    std::string ffmpeg;           // "" = HLAE's own ffmpeg (found next to HLAE), DemoTools2's folder or PATH
+    int recorder = 0;             // Rec_Hlae or Rec_DTRecord (remembered in DemoTools2-record.cfg)
+    bool sound = true;            // DemoTools2's recorder: record the game sound
+    bool samePass = true;         // ... together with the picture, in real time (else in a second, real-time pass)
 };
 
 struct Scan {
@@ -57,7 +62,7 @@ extern std::mutex lock;           // guards set and the scan
 extern Settings set;
 
 // window thread
-void StartScan(const std::string& path);   // background thread
+void StartScan(const std::string& path, bool chosen = true);   // background thread; chosen: by the user (kept for this demo)
 Scan ScanState();
 std::vector<Clip> BuildClips();           // for set.xuid from the scan (needs the demo playing to match the player)
 struct Who { int slot; uint64_t xuid; std::string name; int team; int kills; };
@@ -66,12 +71,26 @@ void Start(const std::vector<Clip>& clips);
 // The Cinematics tab: record demo ticks [startTick, endTick] with the camera as it is (the campath), same video
 // settings as the kill clips. name: the file name (no extension).
 void StartCinematic(int startTick, int endTick, const std::string& name);
+// Record from the current moment until Stop() (the view as it is: DemoTools2 camera, campath, free camera...).
+// DemoTools2's recorder records the sound with the picture (or, with "second pass", afterwards over the same ticks).
+void StartManual(const std::string& name);
+// Freeze path record: the demo stays paused at the current moment and the whole campath is flown and recorded,
+// until its last key (or Stop).
+void StartFreeze(const std::string& name);
+bool ManualRunning();
 void Stop();
 Progress Status();
 std::string OutDir();
 std::string FfmpegPath();                 // "" if not found
 std::string FfmpegSearched();             // where it looked (for the window)
 bool HlaeLoaded();
+enum { Rec_Hlae = 0, Rec_DTRecord = 1 };
+// The recorder a recording uses: "HLAE" or "DTRecord" when it can record now, "" if not (why: what's missing).
+std::string RecorderFor(int recorder, std::string* why);
+// "" or why HLAE's recording looks broken in this CS2: it recorded nothing this session, or CS2 crashed last session
+// while it started recording (for the window: suggests DTRecord).
+std::string HlaeWarning();
+void SaveSettings();                       // the recorder choice
 bool AutoFindFailed();                    // looked for the playing demo's file and didn't find it
 bool GameSize(int& w, int& h);           // CS2's window (what HLAE records), false if not found
 bool StretchSize(int w, int h, int& outW, int& outH);   // the 16:9 size for a 4:3 / 5:4 game size (false: not needed)

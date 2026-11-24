@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -8,6 +8,7 @@
 // DemoTools2's own POV HUD (written from scratch): on a GOTV demo, make the client treat the player you watch as its
 // own local player, so CS2 shows that player's HUD as in their POV demo. Test stage, console only:
 //   dt2_pov 1   on: the watched player's controller becomes the local one (their own HUD)
+//   dt2_pov 2   test: like 1, and DemoTools2 sets the camera from the player's eyes
 //   dt2_pov 3   only clears "watching as GOTV"
 //   dt2_pov 0   off (everything put back)
 namespace Pov {
@@ -16,10 +17,14 @@ void OnFrameStage(int stage);      // game thread, every FrameStageNotify call, 
 void AfterFrameStage(int stage);   // ... and after it
 void Stop();                       // demo stopped / jumped: put everything back (game thread)
 int Mode();
-void OnViewSetup();
-void OnViewDone();                 // the view hook is done: mode 1 swaps now (camera already worked out)                // the view hook runs (game thread): finds the render window
+void OnViewSetup();                // the view hook starts (game thread): learns the render window, puts back for this view
+void OnViewDone();                 // the view hook is done: mode 1 swaps now (camera already worked out)
 bool CameraPawn(uint32_t& handle); // mode 2: the pawn whose eyes the camera should use
-void SetMode(int mode);            // from the window (applied on the game thread next frame)
+bool SwapActive();                 // game thread: the watched player is the local player right now
+// From the window, hotkey or recorder (applied on the game thread next frame).
+// tidy: switched off by the user - reload the view if a swap happened, so nothing made during it stays.
+void SetMode(int mode, bool tidy = false);
+void ReloadView();                 // jump the demo to where it is: CS2 rebuilds the hands, gun and screen effects
 std::string Status();
 
 // For the recorder (game thread)

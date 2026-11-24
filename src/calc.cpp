@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // Calcs and the DemoTools2 camera. See calc.h and README ("Camera and calcs").
 #include "calc.h"
 #include "campath.h"
@@ -14,6 +14,7 @@
 #include <deque>
 #include <fstream>
 #include <map>
+#include <set>
 #include <memory>
 #include <unordered_map>
 
@@ -228,6 +229,69 @@ static float Num(const std::vector<std::string>& a, size_t i, float def) {
 static bool EvalHandle(Node* n);
 static bool EvalView(Node* n);
 static bool EvalFov(Node* n);
+static std::map<uint32_t, uint32_t> g_keptGun;   // player pawn handle -> the gun the camera stays on
+void ResetKeptGuns() { g_keptGun.clear(); }   // caller holds `lock`
+
+// ------------------------------------------------------------------ mount points (see calc.h)
+std::vector<MountKey> mountKeys;
+bool mountKeysOn = false;
+static bool g_mountOverride = false;
+static float g_mountOverrideV[7];
+static double g_mountOverrideT = 0;
+
+void MountOverride(const float v[7]) {   // caller holds `lock`
+    std::copy(v, v + 7, g_mountOverrideV);
+    g_mountOverride = true;
+    g_mountOverrideT = Game::CurTime();
+}
+int MountKeysAdd(const float v[7], std::string* why) {   // caller holds `lock`
+    const double t = Game::CurTime();
+    if (t <= 0) { if (why) *why = "No demo time - play a demo first."; return -1; }
+    MountKey k;
+    k.t = t;
+    k.tick = Game::DemoTick();
+    std::copy(v, v + 7, k.v);
+    for (size_t i = 0; i < mountKeys.size(); ++i)
+        if (std::fabs(mountKeys[i].t - t) < 0.5 / 64) { mountKeys[i] = k; return (int)i; }   // same tick: replace
+    auto it = std::upper_bound(mountKeys.begin(), mountKeys.end(), t, [](double a, const MountKey& b) { return a < b.t; });
+    return (int)(mountKeys.insert(it, k) - mountKeys.begin());
+}
+// Smooth glide (Catmull-Rom through the points, ends held); angles take the short way round.
+bool MountKeysAt(double t, float out[7]) {
+    const size_t n = mountKeys.size();
+    if (!n) return false;
+    if (n == 1 || t <= mountKeys[0].t) { std::copy(mountKeys[0].v, mountKeys[0].v + 7, out); return true; }
+    if (t >= mountKeys[n - 1].t) { std::copy(mountKeys[n - 1].v, mountKeys[n - 1].v + 7, out); return true; }
+    size_t i = 0;
+    while (i + 2 < n && t >= mountKeys[i + 1].t) ++i;
+    const MountKey& a = mountKeys[i];
+    const MountKey& b = mountKeys[i + 1];
+    const MountKey& p = mountKeys[i ? i - 1 : i];
+    const MountKey& q = mountKeys[i + 2 < n ? i + 2 : i + 1];
+    const double u = (t - a.t) / std::max(1e-6, b.t - a.t);
+    for (int c = 0; c < 7; ++c) {
+        float v1 = a.v[c], v0 = p.v[c], v2 = b.v[c], v3 = q.v[c];
+        if (c >= 3 && c <= 5) {   // angles: unwrap around v1
+            v0 = v1 + Wrap180(v0 - v1);
+            v2 = v1 + Wrap180(v2 - v1);
+            v3 = v2 + Wrap180(v3 - v2);
+        }
+        if (c == 6 && (v0 <= 0 || v1 <= 0 || v2 <= 0 || v3 <= 0)) {   // "game" fov in the mix: step, no glide
+            out[c] = u < 0.5 ? v1 : v2;
+            continue;
+        }
+        const double uu = u * u, uuu = uu * u;
+        out[c] = (float)(0.5 * (2 * v1 + (-v0 + v2) * u + (2 * v0 - 5 * v1 + 4 * v2 - v3) * uu + (-v0 + 3 * v1 - 3 * v2 + v3) * uuu));
+    }
+    return true;
+}
+// The values a mountkeys calc uses now: the sliders while the demo stands still after they moved, else the points.
+static bool MountNow(float v[7]) {
+    const double t = Game::CurTime();
+    if (g_mountOverride && std::fabs(t - g_mountOverrideT) < 0.02) { std::copy(g_mountOverrideV, g_mountOverrideV + 7, v); return true; }
+    g_mountOverride = false;
+    return mountKeysOn && MountKeysAt(t, v);
+}
 
 static Node* Ref(Node* self, size_t i, Kind kind) {
     if (i >= self->args.size()) return nullptr;
@@ -311,6 +375,25 @@ static bool EvalHandle(Node* n) {
             uint8_t* ws = Get<uint8_t*>(pawn, F.weaponServices);
             if (Readable(ws + F.activeWeapon, 4)) n->ent = Game::FromHandle(Get<uint32_t>(ws, F.activeWeapon));
         }
+    } else if (t == "keptgun") {
+        // The gun that was in their hand when the camera was put on it - and it stays that gun when they switch to
+        // another weapon (then it is holstered on their body). A new gun only when that one is gone or someone else
+        // has it (dropped, picked up, round over).
+        if (void* pawn = RefEntity(n, 0)) {
+            const uint32_t ph = Game::HandleOf(pawn);
+            void* w = nullptr;
+            auto it = g_keptGun.find(ph);
+            if (it != g_keptGun.end()) {
+                w = Game::FromHandleExact(it->second);
+                if (w && Game::FromHandle(Get<uint32_t>(w, F.owner)) != pawn) w = nullptr;
+            }
+            if (!w) {
+                uint8_t* ws = Get<uint8_t*>(pawn, F.weaponServices);
+                if (Readable(ws + F.activeWeapon, 4)) w = Game::FromHandle(Get<uint32_t>(ws, F.activeWeapon));
+                if (w) g_keptGun[ph] = Game::HandleOf(w);
+            }
+            n->ent = w;
+        }
     } else if (t == "viewmodel") {
         // The first-person gun of a player (only the player whose eyes the demo shows has one).
         if (void* pawn = RefEntity(n, 0)) {
@@ -379,6 +462,15 @@ static bool EvalView(Node* n) {
             v.pos = {p[0], p[1], p[2]};
             v.ang = ToAngles(FromQuat(q));
             n->ok = true;
+        } else if (e && n->args.size() > 1) {
+            // a holstered gun may have no working attachment: then its own position and turn (the gun's origin)
+            if (EntityView(e, v)) {
+                n->ok = true;
+                static std::set<std::string> said;
+                if (said.insert(n->args[1]).second)
+                    Log("camera: attachment '%s' not available on %s (holstered?) - using the gun's own position",
+                        n->args[1].c_str(), Game::DesignerName(e) ? Game::DesignerName(e) : "?");
+            }
         }
     } else if (t == "bone") {
         void* e = RefEntity(n, 0);
@@ -396,6 +488,18 @@ static bool EvalView(Node* n) {
             // forward, right, up -> local (forward, left, up)
             v.pos = p.pos + Mul(m, {Num(n->args, 1, 0), -Num(n->args, 2, 0), Num(n->args, 3, 0)});
             v.ang = ToAngles(MulM(m, FromAngles({Num(n->args, 4, 0), Num(n->args, 5, 0), Num(n->args, 6, 0)})));
+            n->ok = true;
+        }
+    } else if (t == "mountkeys") {
+        // like offset, but forward/right/up/pitch/yaw/roll come from the mount points (the numbers typed are used
+        // when there are none)
+        View p;
+        if (RefView(n, 0, p)) {
+            float k[7] = {Num(n->args, 1, 0), Num(n->args, 2, 0), Num(n->args, 3, 0), Num(n->args, 4, 0), Num(n->args, 5, 0), Num(n->args, 6, 0), 0};
+            MountNow(k);
+            Mat m = FromAngles(p.ang);
+            v.pos = p.pos + Mul(m, {k[0], -k[1], k[2]});
+            v.ang = ToAngles(MulM(m, FromAngles({k[3], k[4], k[5]})));
             n->ok = true;
         }
     } else if (t == "chase") {
@@ -471,6 +575,11 @@ static bool EvalFov(Node* n) {
     n->frame = g_frame;
     n->ok = false;
     if (n->type == "value") { n->fov = Num(n->args, 0, 90); n->ok = true; }
+    else if (n->type == "mountkeys") {   // the fov of the mount points (0 there = the game's: no value)
+        float k[7] = {0, 0, 0, 0, 0, 0, Num(n->args, 0, 0)};
+        MountNow(k);
+        if (k[6] > 0) { n->fov = k[6]; n->ok = true; }
+    }
     else if (n->type == "smooth") {
         Node* src = Ref(n, 0, Kind::Fov);
         if (src && EvalFov(src)) {
@@ -495,6 +604,7 @@ static const TypeInfo kTypes[] = {
     {Kind::Handle, "observed", "observed   (the player whose eyes the demo shows)", 0},
     {Kind::Handle, "weapon", "weapon <player handle>   (the gun in hand)", 1},
     {Kind::Handle, "viewmodel", "viewmodel <player handle>   (their first-person gun, if the demo shows their eyes)", 1},
+    {Kind::Handle, "keptgun", "keptgun <player handle>   (the gun in hand when first looked at - stays it when holstered)", 1},
     {Kind::Handle, "owner", "owner <handle>", 1},
     {Kind::Handle, "grenade", "grenade [<player handle>]   (the newest grenade in the air)", 0},
     {Kind::VecAng, "value", "value <x> <y> <z> <pitch> <yaw> <roll>", 6},
@@ -512,7 +622,9 @@ static const TypeInfo kTypes[] = {
     {Kind::VecAng, "add", "add <a> <b>", 2},
     {Kind::VecAng, "subtract", "subtract <a> <b>", 2},
     {Kind::VecAng, "smooth", "smooth <vecang> <position time> <angle time> [<max speed>]   (seconds; units/s)", 1},
+    {Kind::VecAng, "mountkeys", "mountkeys <vecang> <forward> <right> <up> <pitch> <yaw> <roll>   (offset that follows the Attach tab's points)", 7},
     {Kind::Fov, "value", "value <degrees>", 1},
+    {Kind::Fov, "mountkeys", "mountkeys [<degrees>]   (the fov of the Attach tab's points)", 0},
     {Kind::Fov, "smooth", "smooth <fov calc> <time>", 1},
 };
 static const char* KindName(Kind k) { return k == Kind::Handle ? "handle" : k == Kind::VecAng ? "vecang" : "fov"; }

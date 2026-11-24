@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -38,6 +38,9 @@ struct Result {
 // Whole file in memory (a demo is usually 50-300 MB; read with ReadFile by the caller, or use ScanFile).
 Result Scan(const uint8_t* data, size_t size);
 Result ScanFile(const std::string& path);
+// Only the start and the end of the file: the map (header) and the length in ticks (file info, 0 if the demo was
+// cut short and has none). Fast - for telling demos apart.
+bool ReadHeader(const std::string& path, std::string& map, int& ticks);
 
 // Snappy (raw block format) - used by CS2 demo frames
 bool SnappyDecompress(const uint8_t* in, size_t n, std::vector<uint8_t>& out);

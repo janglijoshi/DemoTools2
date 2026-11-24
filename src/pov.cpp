@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // DemoTools2's own POV HUD - see pov.h. Written from DemoTools2's own research of client.dll:
 //  - GetLocalPlayerController(slot) / GetLocalPlayerPawn(slot) read two arrays indexed by split-screen slot;
 //  - "is this controller HLTV" = controller->m_bIsLocalPlayerController ? (global "watching as GOTV" byte)
@@ -10,8 +10,10 @@
 #include "pov.h"
 #include "console.h"
 #include "game.h"
+#include "skins.h"
 #include "util.h"
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <cstring>
@@ -32,6 +34,7 @@ struct Saved {
     uint8_t hltvByte = 1;
 };
 static Saved g_saved;
+static bool g_swapped = false;   // a swap happened since POV was switched on (so switching off tidies up)
 
 static void SetStatus(const std::string& s) {
     std::lock_guard<std::mutex> g(g_statusLock);
@@ -42,6 +45,32 @@ static void SetStatus(const std::string& s) {
 static ptrdiff_t Field(const char* cls, const char* name) {
     ptrdiff_t o = 0;
     return Game::SchemaField(cls, name, o) ? o : 0;
+}
+
+// The two controller flags POV writes. The code patterns give one offset each; CS2's schema gives them by name.
+// After a CS2 update the patterns can land on other code, and writing 1 to the wrong byte of a controller breaks
+// things far from the HUD (rendering, the hands). So the schema has the last word, and if neither agrees POV stays off.
+struct Flags { bool ok = false; ptrdiff_t isLocal = 0, isHltv = 0; std::string why; };
+static const Flags& F() {
+    static Flags f;
+    static bool done = false;
+    if (done) return f;
+    done = true;
+    const Game::LocalSlots& L = Game::Locals();
+    const ptrdiff_t sLocal = Field("CBasePlayerController", "m_bIsLocalPlayerController");
+    const ptrdiff_t sHltv = Field("CBasePlayerController", "m_bIsHLTV");
+    f.isLocal = sLocal ? sLocal : L.isLocal;
+    f.isHltv = sHltv ? sHltv : L.isHltv;
+    if (sLocal && L.isLocal && sLocal != L.isLocal)
+        Log("POV: 'local controller' field: code says 0x%x, schema says 0x%x - using the schema", (unsigned)L.isLocal, (unsigned)sLocal);
+    if (sHltv && L.isHltv && sHltv != L.isHltv)
+        Log("POV: 'is HLTV' field: code says 0x%x, schema says 0x%x - using the schema", (unsigned)L.isHltv, (unsigned)sHltv);
+    if (!L.controllers || !L.hltv) f.why = "the local-player code wasn't found in this CS2 build";
+    else if (!f.isLocal || !f.isHltv) f.why = "the controller fields weren't found in this CS2 build";
+    f.ok = f.why.empty();
+    Log("POV: fields m_bIsLocalPlayerController 0x%x, m_bIsHLTV 0x%x%s%s", (unsigned)f.isLocal, (unsigned)f.isHltv, f.ok ? "" : " - ",
+        f.why.c_str());
+    return f;
 }
 struct Offs {
     bool ok = false;
@@ -64,9 +93,9 @@ static const Offs& O() {
 
 // The entity's handle, only if it really is a live entity (its handle leads back to it); 0 otherwise.
 static uint32_t SafeHandle(void* e) {
-    if ((uintptr_t)e < 0x10000) return 0;
+    if (!Game::LooksLikePtr(e)) return 0;
     void* id = Readable((uint8_t*)e + 0x10, 8) ? *(void**)((uint8_t*)e + 0x10) : nullptr;
-    if ((uintptr_t)id < 0x10000 || !Readable((uint8_t*)id + 0x10, 4)) return 0;
+    if (!Game::LooksLikePtr(id) || !Readable((uint8_t*)id + 0x10, 4)) return 0;
     const uint32_t h = Game::HandleOf(e);
     return h != 0xffffffffu && Game::FromHandleExact(h) == e ? h : 0;
 }
@@ -86,9 +115,10 @@ static void Restore(const char* why) {
     const Game::LocalSlots& L = Game::Locals();
     void* gotv = Game::FromHandleExact(g_saved.gotvCtrl);
     void* target = Game::FromHandleExact(g_saved.targetCtrl);
-    if (target && L.isLocal) Wr<uint8_t>(target, L.isLocal, 0);
+    const ptrdiff_t isLocal = F().isLocal;
+    if (target && isLocal) Wr<uint8_t>(target, isLocal, 0);
     if (L.controllers) L.controllers[0] = gotv;   // nullptr if the GOTV controller is gone: the game sets it again
-    if (gotv && L.isLocal) Wr<uint8_t>(gotv, L.isLocal, 1);
+    if (gotv && isLocal) Wr<uint8_t>(gotv, isLocal, 1);
     if (L.hltv) *L.hltv = g_saved.hltvByte;
     g_saved = Saved{};
     if (why) SetStatus(why);
@@ -102,39 +132,48 @@ static bool Watched(void* gotvCtrl, void*& ctrl, void*& pawn) {
     void* viewer = Game::FromHandle(Rd<uint32_t>(gotvCtrl, o.ctrlPawn));
     if (!viewer) return false;
     void* obs = Rd<void*>(viewer, o.pawnObs);
-    if ((uintptr_t)obs < 0x10000) return false;
+    if (!Game::LooksLikePtr(obs)) return false;
     pawn = Game::FromHandle(Rd<uint32_t>(obs, o.obsTarget));
     if (!pawn || pawn == viewer) return false;
     ctrl = Game::FromHandle(Rd<uint32_t>(pawn, o.pawnCtrl));
     return ctrl != nullptr && ctrl != gotvCtrl;
 }
 
-// The render window: the frame stage after which CS2 sets up the view and draws the world and the first-person
+// The render window: the frame stage during which CS2 sets up the view and draws the world and the first-person
 // hands, and the stage after that. Inside it the real (GOTV) state is put back, so the camera and the hands are
 // the demo's own; outside it (where the HUD reads its numbers) the watched player is the local player.
-// Found at run time: the stage notified last before the view hook runs, and the first one after it.
-static int g_lastStage = -1, g_renderStart = -1, g_renderEnd = -1, g_candStart = -1, g_candEnd = -1, g_stable = 0;
-static bool g_wantEnd = false;
+// Found at run time: the stage notified last before the view hook runs, and the first one after it. It is learned
+// all the time, not once: a CS2 or HLAE update (HLAE 2.193 added stream previews, which render extra views) can
+// move it, and a window learned once would then put the swap where the hands are drawn.
+static int g_lastStage = -1, g_renderStart = -1, g_renderEnd = -1, g_candStart = -1, g_stable = 0;
+static int g_viewsThisFrame = 0, g_viewsPerFrame = 0;
+static ULONGLONG g_lastView = 0;
 
+static void Restore(const char* why);
 void OnViewSetup() {
-    if (g_renderStart >= 0) return;   // found once, while POV is on or off
-    g_candStart = g_lastStage;
-    g_wantEnd = true;
+    if (g_viewsThisFrame++ == 0) g_candStart = g_lastStage;
+    g_lastView = GetTickCount64();
+    // Every view is set up with the demo's own state, also a second view in the same frame (HLAE streams and
+    // stream preview render one view per stream): put back here, swapped again once this view is done.
+    if (g_saved.active && g_mode.load() == 1) Restore(nullptr);
 }
 
 static void Detect(int stage) {
-    if (!g_wantEnd || g_renderStart >= 0) return;
-    g_wantEnd = false;
+    if (!g_viewsThisFrame) return;
     static int prevStart = -2, prevEnd = -2;
-    g_candEnd = stage;
-    g_stable = (g_candStart == prevStart && g_candEnd == prevEnd) ? g_stable + 1 : 0;
+    g_viewsPerFrame = g_viewsThisFrame;
+    g_viewsThisFrame = 0;
+    g_stable = (g_candStart == prevStart && stage == prevEnd) ? g_stable + 1 : 0;
     prevStart = g_candStart;
-    prevEnd = g_candEnd;
-    if (g_stable >= 8 && g_candStart >= 0 && g_candStart != g_candEnd) {
-        g_renderStart = g_candStart;
-        g_renderEnd = g_candEnd;
-        Log("POV: render window is between frame stages %d and %d (camera and hands use the demo's own view there)", g_renderStart, g_renderEnd);
-    }
+    prevEnd = stage;
+    if (g_stable < 8 || g_candStart < 0 || g_candStart == stage) return;
+    if (g_candStart == g_renderStart && stage == g_renderEnd) return;
+    const bool moved = g_renderStart >= 0;
+    Restore(nullptr);
+    g_renderStart = g_candStart;
+    g_renderEnd = stage;
+    Log("POV: render window %sis between frame stages %d and %d (%d view(s) per frame)", moved ? "MOVED - now " : "",
+        g_renderStart, g_renderEnd, g_viewsPerFrame);
 }
 
 // ------------------------------------------------------------------ follow the chosen player
@@ -241,7 +280,8 @@ static void Apply(int mode) {
     if (mode != 3 && !g_canSwap) { Restore(nullptr); return; }
     if (!Game::IsPlayingDemo()) { Restore("waiting for a demo"); return; }
     const Game::LocalSlots& L = Game::Locals();
-    if (!L.controllers || !L.hltv || !L.isLocal) { SetStatus("not available in this CS2 build (see DemoTools2.log)"); return; }
+    const Flags& fl = F();
+    if (!fl.ok) { SetStatus("not available in this CS2 build: " + fl.why); return; }
     Step step("POV HUD");
 
     // Who is the GOTV viewer? Our saved one, unless the game put a new one in slot 0 (demo jump, reconnect).
@@ -253,7 +293,18 @@ static void Apply(int mode) {
         gotv = L.controllers[0];
     }
     if (!gotv || !SafeHandle(gotv)) { SetStatus("no local controller yet"); return; }
-    if (!g_saved.active && !Rd<uint8_t>(gotv, L.isHltv) && !*L.hltv) { SetStatus("this isn't a GOTV demo (already a POV demo)"); return; }
+    if (!g_saved.active) {
+        // Before changing anything, check that what was found really is what it should be: the controller in slot 0
+        // is marked local, and the GOTV byte is a bool. If not, this CS2 build moved something: don't write at all.
+        const uint8_t local = Rd<uint8_t>(gotv, fl.isLocal), hl = *L.hltv;
+        if (local != 1 || hl > 1) {
+            static bool logged = false;
+            if (!logged) { logged = true; Log("POV: check failed (local flag %u, GOTV byte %u) - POV stays off in this CS2 build", local, hl); }
+            SetStatus("not available in this CS2 build (its local-player data moved) - see DemoTools2.log");
+            return;
+        }
+        if (!Rd<uint8_t>(gotv, fl.isHltv) && !hl) { SetStatus("this isn't a GOTV demo (already a POV demo)"); return; }
+    }
 
     void *ctrl = nullptr, *pawn = nullptr;
     if (mode != 3 && (!Watched(gotv, ctrl, pawn) || !SafeHandle(ctrl))) {
@@ -272,6 +323,10 @@ static void Apply(int mode) {
 
     // Target changed: put the previous one back first, so only one controller is ever marked local.
     if (g_saved.active && ctrl && SafeHandle(ctrl) != g_saved.targetCtrl) Restore(nullptr);
+    if (!g_saved.active && ctrl && Rd<uint8_t>(ctrl, fl.isLocal) != 0) {   // another player marked local: not ours to change
+        SetStatus("not available in this CS2 build (the watched player is already marked local) - see DemoTools2.log");
+        return;
+    }
     if (!g_saved.active) {
         g_saved.active = true;
         g_saved.gotvCtrl = SafeHandle(gotv);
@@ -279,9 +334,10 @@ static void Apply(int mode) {
         g_saved.targetCtrl = ctrl ? SafeHandle(ctrl) : 0;
         g_saved.targetPawn = pawn ? SafeHandle(pawn) : 0;
         if (ctrl) {
-            Wr<uint8_t>(gotv, L.isLocal, 0);
-            Wr<uint8_t>(ctrl, L.isLocal, 1);
+            Wr<uint8_t>(gotv, fl.isLocal, 0);
+            Wr<uint8_t>(ctrl, fl.isLocal, 1);
             L.controllers[0] = ctrl;
+            g_swapped = true;
         }
         if (!ctrl) SetStatus("on (test 3: only the GOTV flag cleared)");
     }
@@ -289,7 +345,7 @@ static void Apply(int mode) {
     *L.hltv = 0;
     if (ctrl) {
         L.controllers[0] = ctrl;
-        Wr<uint8_t>(ctrl, L.isLocal, 1);
+        Wr<uint8_t>(ctrl, fl.isLocal, 1);
     }
 }
 
@@ -322,12 +378,17 @@ void OnFrameStage(int stage) {
     if (g_renderStart < 0) { SetStatus("on - waiting a moment to learn the frame timing (play the demo)"); return; }
     if (stage == g_renderEnd) {   // a new frame starts: the demo's real state for the game's own work
         Restore(nullptr);
+        if (GetTickCount64() - g_lastView > 2000) {   // no view this long: the swap would have no "after the camera"
+            g_canSwap = false;
+            SetStatus("on - waiting for the demo's camera (CS2 isn't running DemoTools2's view hook right now)");
+            return;
+        }
         Follow();
     }
 }
 // Mode 1: swapped only once CS2 has worked out this frame's camera (end of the view hook) until the next frame
 // starts - the camera (frozen when swapped earlier) and the hands stay the demo's, the HUD reads after that.
-// Mode 2: swapped from the end of the frame's last stage, and DemoTools2 sets the camera from the player's eyes.
+// Mode 2 (test): swapped from the end of the frame's last stage, and DemoTools2 sets the camera from the player's eyes.
 void AfterFrameStage(int stage) {
     const int mode = g_mode.load();
     if (mode == 2 && g_renderStart >= 0 && stage == g_renderStart) Apply(mode);
@@ -365,6 +426,8 @@ void LockTo(uint64_t xuid) {
     g_deadSince = 0;
 }
 
+bool SwapActive() { return g_saved.active; }
+
 bool CameraPawn(uint32_t& handle) {
     if (g_mode.load() != 2 || !g_saved.active || !g_saved.targetPawn) return false;
     handle = g_saved.targetPawn;
@@ -372,6 +435,20 @@ bool CameraPawn(uint32_t& handle) {
 }
 
 void Stop() { Restore(g_mode.load() ? "demo stopped - put back" : nullptr); }
+
+// Switched off after a swap: CS2 may still hold first-person models or screen effects it made while the watched
+// player was the local one. Jumping the demo to where it is makes CS2 build them again from the demo itself.
+static void TidyUp() {
+    if (!g_swapped) return;
+    g_swapped = false;
+    Log("POV: switched off - reloading the view at the current tick");
+    Skins::RequestSeek();
+}
+void ReloadView() {
+    Log("POV: reload view asked for");
+    Skins::RequestSeek();
+}
+
 int Mode() { return g_mode.load(); }
 std::string Status() {
     std::lock_guard<std::mutex> g(g_statusLock);
@@ -388,22 +465,26 @@ static void Cmd(const Console::Args& a) {
         return;
     }
     const int m = std::atoi(a[1].c_str());
-    if (m < 0 || m > 3) { Console::Print("dt2_pov: 0, 1 or 3"); return; }
+    if (m < 0 || m > 3) { Console::Print("dt2_pov: 0, 1, 2 or 3"); return; }
     if (m && CrashedLastTime("POV HUD")) Console::Print("dt2_pov: note - CS2 crashed during the POV HUD last time; trying again");
-    const Game::LocalSlots& L = Game::Locals();
     (void)O();
-    if (m && (!L.controllers || !L.hltv)) { Console::Print("dt2_pov: not available in this CS2 build (see DemoTools2.log)"); return; }
-    g_mode = m;
-    if (!m) SetStatus("off");
+    if (m && !F().ok) { Console::Print("dt2_pov: not available in this CS2 build: %s", F().why.c_str()); return; }
+    SetMode(m, true);
     Console::Print("dt2_pov %d", m);
 }
 
-void SetMode(int m) {
+void SetMode(int m, bool tidy) {
     if (m < 0 || m > 3) return;
-    g_mode = m;
-    if (!m) SetStatus("off");
+    const int was = g_mode.exchange(m);
+    if (!m) {
+        SetStatus("off");
+        if (was && tidy) TidyUp();
+        if (!tidy) g_swapped = false;
+    }
 }
 
-void Init() { Console::Add("dt2_pov", "DemoTools2's own POV HUD (test): dt2_pov 1|2|3|0", &Cmd); }
+void Init() {
+    Console::Add("dt2_pov", "DemoTools2's own POV HUD (test): dt2_pov 1|2|3|0", &Cmd);
+}
 
 }  // namespace Pov

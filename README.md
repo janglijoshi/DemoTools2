@@ -59,6 +59,26 @@ Cinematics are explained [further down](#record-kill-clips).
 </p>
 <p align="center"><sub>The 2.0 window: pick a page in the sidebar. Skins, Record, Cinematics and Status shown.</sub></p>
 
+## 🆕 New in 2.1: HLAE-update proof
+
+HLAE only has to load DemoTools2 (`mirv_loadlibrary`). After that, nothing depends on HLAE being updated for the
+newest CS2:
+
+* **Two recorders: HLAE or DTRecord.** Pick one under **Recorder** in the Record tab; Record, *Record the path* and
+  the new *Record from here* button use the one you picked. **DTRecord** is DemoTools2's own recorder: the picture
+  straight from DirectX 11 and the game sound recorded with it in one go, joined into one MP4. It doesn't use
+  HLAE's recording, so it keeps working while HLAE isn't updated for a new CS2.
+  * With HLAE picked: if HLAE takes the commands but records nothing, DemoTools2 notices within a few seconds, stops
+    and tells you to switch to DTRecord.
+  * If HLAE's recording crashed CS2, the next session starts on DTRecord and says why.
+* Skins, Camera, Cinematics, POV HUD and Status never used HLAE's features. The camera hook is now also found
+  when an HLAE build changes a little more of the game's view code than it does today.
+* **Camera:** *Record from here* on every camera tab, **points on the mount** (a camera bolted to the gun muzzle or any
+  part that glides between positions you set), and a gun camera that **stays on the gun** when it is holstered.
+* **Freeze path record** (Cinematics): the whole campath flown through a paused, frozen moment of the demo. See [Attach the camera to a part](#attach-the-camera-to-a-part).
+* **Viewmodel** tab (Camera page): your own viewmodel **position and FOV** for everyone in a demo. See
+  [Viewmodel](#viewmodel-first-person-gun).
+
 ## 🆕 New in 2.0
 
 * **Record:** pick a player and press *Record*: every kill of theirs in the demo becomes an MP4 clip with motion
@@ -81,8 +101,8 @@ Everything else is in the [changelog](CHANGELOG.md).
 4. **Play a demo** and press **Insert** to open the menu. Pick a page in the sidebar: **Skins**, **Record**,
    **Cinematics**, **Camera** or **Status**.
 
-Your skins save automatically and come back in every demo where that player appears. To record, Record and
-Cinematics use HLAE's own recording, so set up ffmpeg in HLAE once (*File → Settings*).
+Your skins save automatically and come back in every demo where that player appears. Recording needs
+`ffmpeg.exe`: HLAE's copy is found by itself (or put one in the DemoTools2 folder, or pick it in the Record tab).
 
 ## 🔒 Is it safe?
 
@@ -110,7 +130,8 @@ Only use it in demos, the way the tutorial shows.
 DemoTools2 (formerly DemoSkins) is loaded into CS2 by HLAE. Its window has five pages, picked in the sidebar on the left:
 
 * **Camera** (beta; `dt2_calc` / `dt2_cam` / `dt2_preset`): attach the camera to a player, their gun or their grenade
-  and follow it smoothly, like `mirv_calc` + `mirv_cam` in HLAE for CS:GO. Record it with HLAE's `mirv_streams`.
+  and follow it smoothly, like `mirv_calc` + `mirv_cam` in HLAE for CS:GO. Record it with *Record from here* or
+  HLAE's `mirv_streams`.
 * **Cinematics** (`dt2_campath`): campaths built with the demo paused and timed by DemoTools2, live path keys, quick
   orbit / dolly moves, hotkeys, and recording the path to MP4.
 * **Record** (`dt2_record`): every kill of one player in the playing demo, recorded to MP4 with motion blur.
@@ -151,12 +172,12 @@ To load it automatically, add the `mirv_loadlibrary` line to HLAE's CS2 config, 
 
 <p align="center"><img src="docs/menu-record.png" alt="The Record page with five kill clips listed" width="820"></p>
 
-The **Record** tab records every kill of one player, by itself, through HLAE's own recording (`mirv_streams`) and
-HLAE's ffmpeg. Start CS2 through HLAE as usual, and set up ffmpeg in HLAE once (File > Settings).
+The **Record** tab records every kill of one player, by itself, with HLAE's recording (`mirv_streams`) or with
+DTRecord, DemoTools2's own (see [Recorders](#recorders-hlae-or-dtrecord) below). Either way it needs `ffmpeg.exe`.
 
 1. Play the demo. DemoTools2 finds the file CS2 is playing by itself and reads every kill from it (nothing is
    changed); the player you are watching is chosen. (Only if CS2 doesn't show which file it plays, the tab asks for
-   it once.)
+   it once. If it picked the wrong file, **Not this demo? Choose the file**.)
 2. Choose another player if you want. The list shows each clip: the round, the kills (weapon, headshot, wallbang, no-scope, smoke).
    Untick the ones you don't want; **Watch** jumps the demo there.
 3. Set the clip length (seconds before / after a kill; kills close together become one clip), the view
@@ -171,6 +192,35 @@ When CS2 runs in a 4:3 (or 5:4) resolution, the clips are stretched to 16:9 whil
 1920x1080), the stretched look players use; **Stretch 4:3 to 16:9** turns that off.
 Motion blur makes the game run at frame rate x samples frames a second and blends them, so recording takes longer than
 the clips last.
+
+**Record from here** (any Camera tab, or `dt2_record start [name]` / `dt2_record stop`) records whatever the view
+shows from the current moment until you stop it: the DemoTools2 camera, a campath, the free camera. It works with the
+demo paused too, and saves `recording_<time>.mp4` in the same folder (**Open folder** under the button).
+
+### Recorders: HLAE or DTRecord
+
+**Recorder** in the Record tab's video settings (also used by *Record the path* and *Record from here*). The one you
+pick is used; your choice is remembered in `DemoTools2-record.cfg`.
+
+| Recorder | What it does |
+|---|---|
+| **HLAE** | HLAE's `mirv_streams` (ffmpeg, HLAE's sampler for motion blur, game sound as WAV). If HLAE takes the commands but records nothing (an HLAE build not updated for a new CS2), DemoTools2 notices within a few seconds, stops and tells you to switch to DTRecord. If CS2 crashed while HLAE started recording, the next session starts on DTRecord and says why. |
+| **DTRecord** | DemoTools2's own recorder. It doesn't use HLAE's recording at all, so it works with an HLAE build that isn't updated for the newest CS2. It reads the picture CS2 shows from DirectX 11, blends the motion-blur samples itself, and pipes the frames into ffmpeg. |
+
+**Game sound** (CS2's own sound only, through Windows' per-process loopback; needs Windows 10 version 2004 or newer)
+can be recorded two ways, under **Sound**:
+
+| Sound | How |
+|---|---|
+| **With the picture** (default) | Each clip plays **once**, in real time. Every frame CS2 shows is timed, the video is built at your frame rate from them, the sound is recorded at the same time on the same clock, and both are joined into one MP4. Motion blur blends the frames CS2 shows in each video frame's time, so it is smoother the higher CS2's FPS (300 FPS, 60 fps video, blur amount 0.5: 2-3 frames). |
+| **Second pass** | The picture first, the game at a fixed step with DTRecord's exact motion blur (4-32 samples), then the same ticks again in real time for the sound; joined into one MP4. |
+
+Untick **Game sound** for picture only. While it records sound, `snd_mute_losefocus` is set to 0 so the sound keeps
+playing while the DemoTools2 window has the focus. Its working files go to `dt2_takes` in the recordings folder and
+are removed once each clip is finished. If joining picture and sound fails, the sound is kept next to the clip and
+ffmpeg's message is in `<clip>.mp4.join.log`.
+
+DTRecord needs CS2 in **DirectX 11** mode, which is the default. With `-vulkan` in the launch options, use HLAE.
 
 ## Cinematics (campaths)
 
@@ -198,10 +248,16 @@ The **Cinematics** tab makes camera moves through keyframes, timed to the demo. 
 ### Recording the path
 
 **Record the path** (Cinematics tab) records the current path to an MP4 the same way the Record tab records kills:
-through HLAE's recording and ffmpeg, with the same video settings (motion blur, frame rate, 4:3 stretch, quality -
+with the recorder picked in the Record tab (HLAE or DTRecord) and ffmpeg, with the same video settings (motion blur, frame rate, 4:3 stretch, quality -
 open **Video settings** to change them). It goes to the path's start, switches the path on, records to its end and
 saves `cinematic_<name>_<time>.mp4` (with game sound) in the same recordings folder. **Stop recording** stops it;
 the **Record path / stop** hotkey does both.
+
+**Freeze path record** flies the same path through a frozen moment: the demo stays paused where it is now (players,
+grenades and smoke all stand still) and the camera moves along the whole path, as long as the path
+lasts. The path runs on its own clock, one step per recorded frame, so the video is as smooth as a normal recording;
+DTRecord uses its exact fixed-step motion blur. No sound (the demo is paused). Saved as `freeze_<name>_<time>.mp4`.
+The path doesn't need demo ticks for this: any path works, made anywhere in the demo.
 
 ### Hotkeys
 
@@ -240,6 +296,9 @@ DemoTools2 has its own POV HUD (beta, written from scratch): in the **Cinematics
 (DemoTools2, test)**, or `dt2_pov 1`. The Record tab's **POV with HUD** view uses it. While it is on, the radar only
 shows the enemies the player's team has spotted. It follows the player watched when it is switched on; when that player dies,
 the spectator HUD comes back and the demo watches a living teammate, and next round it goes back to the player.
+It checks CS2's data before changing anything and stays off (with the reason in Status and `DemoTools2.log`) if a CS2
+update moved it. Switching it off reloads the view at the current tick, so the gun, hands and screen effects are the
+demo's own again; **Reload view** does the same at any time.
 
 HLAE builds that include `mirv_pov` show the watched player's own HUD on a GOTV demo, as in their POV demo. The
 Cinematics tab has switches for it (POV HUD, scoreboard sync, buy menu) when the loaded HLAE has the command. A path
@@ -266,6 +325,14 @@ like a camera bolted on (not a camera that follows):
    camera in front of the part looking back, e.g. a camera on the muzzle filming the player's face; *Looking forward*
    looks the way the part points. *Smooth* above 0 takes out shake.
 4. Save the result under **Presets** to use it in other demos.
+5. **Stay on this gun** (gun parts, on by default): the camera stays on the gun that was in their hand when you
+   pressed **Attach camera** - also when they switch to a pistol, knife or grenade and the gun is holstered on their
+   back. A new gun only once that one is gone or someone else has it. Off: always the gun in their hand.
+6. **Points on the mount** make the mounted camera move: pause, place it, **Add point here**; go to a later moment,
+   place it again, add the next. With **Glide through the points** on, it glides between them as the demo plays,
+   still bolted to the part (e.g. sliding along the barrel and turning round to the player's face). While the demo is
+   paused, the sliders show the camera live so you can line up the next point. Click a point to load its numbers,
+   **Go to** jumps there, **Set** gives it the current numbers, **x** deletes it. Points aren't kept after CS2 closes.
 
 ### One click: Follow a player
 
@@ -386,6 +453,15 @@ plain `dt2_` commands, so you can also `exec` them or edit them by hand.
   HLAE's campath/mirv_input still work when the DemoTools2 camera is off.
 * If `r_drawviewmodel` is locked, unlock cheats with HLAE first (`mirv_cvar_unlock_sv_cheats`).
 * If the field of view doesn't change, use HLAE's `mirv_fov` instead.
+
+## Viewmodel (first-person gun)
+
+**Camera → Viewmodel**.
+
+**Position and FOV.** Off, every player's gun sits where their own settings put it (the demo recorded them). On, your
+position (left/right, back/forward, down/up) and FOV for everyone, with presets: CS2 default, Classic, Wide, Centered.
+CS2 keeps these within -2..2.5 / -2..2 / -2..2 and FOV 60..68; **Past CS2's limits** allows -10..10 and FOV 40..120.
+With the POV HUD on, the gun keeps the player's own position. Console: `dt2_viewmodel`.
 
 ## T and CT loadouts
 
@@ -511,7 +587,8 @@ DemoTools2 reads what it needs from the running game at start-up instead of rely
 update, anything it can't find (or that doesn't behave as expected) switches itself off and is listed in the
 **Status** tab, with the reason; the menu and every other part keep working. Typical outcome: the menu, saved
 skins and settings always work; a skin part (say knife models) may show *Off* until DemoTools2 is updated for that
-CS2 build; the camera (beta) depends on HLAE and may switch off after an HLAE update. If a part crashes, it stays off
+CS2 build. HLAE only loads DemoTools2: if HLAE's recording isn't updated for a new CS2 yet, set **Recorder** to
+**DTRecord** (DemoTools2 tells you when HLAE records nothing). If a part crashes, it stays off
 for the next session (safe mode) and the Status tab says so. *Open DemoTools2 folder* and *Open the log* on that page take you to the logs.
 
 ## Something wrong?
@@ -534,6 +611,9 @@ Typical messages:
 | `camera: view hook NOT found` | A CS2 update moved the view code: the camera can't take over the view. Send the log. |
 | `console commands: ...` | The dt2_ commands aren't in the console; the command line in the Camera tab still works. |
 | `body groups: NOT found` | Gloves can't be shown on players who had default gloves; legacy finishes use the mesh mask only. |
+| `record: HLAE didn't record clip ...` | HLAE is loaded but isn't recording in this CS2 (not updated yet). Set **Recorder** to **DTRecord**. |
+| `capture: ... FAILED - see the .ffmpeg.log` | ffmpeg stopped while DTRecord was writing a clip; the reason is in that log file next to the clip. |
+| `sound: couldn't record CS2's sound` | Windows' per-process loopback isn't available (Windows 10 older than version 2004): clips are saved without sound. |
 
 ## Build it yourself
 

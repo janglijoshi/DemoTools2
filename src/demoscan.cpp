@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // CS2 demo kill scanner - see demoscan.h.
 // Layout of a CS2 .dem: "PBDEMS2\0", two int32 offsets, then frames: varint command, varint tick, varint size,
 // payload (snappy-compressed when command & 64). Packet frames carry a bit stream of net messages
@@ -442,6 +442,63 @@ Result Scan(const uint8_t* data, size_t size) {
     if (s.deathId < 0) { r.error = "no kill events found in this demo"; return r; }
     r.ok = true;
     return r;
+}
+
+bool ReadHeader(const std::string& path, std::string& map, int& ticks) {
+    map.clear();
+    ticks = 0;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::vector<uint8_t> head(1 << 16);
+    head.resize(std::fread(head.data(), 1, head.size(), f));
+    bool ok = head.size() >= 16 && std::memcmp(head.data(), "PBDEMS2", 8) == 0;
+    if (ok) {
+        Scanner s;
+        // first frame: DEM_FileHeader (1)
+        Pb pb(head.data() + 16, head.size() - 16);
+        bool k = true;
+        const uint32_t c = (uint32_t)pb.varint(k);
+        pb.varint(k);
+        const uint64_t l = pb.varint(k);
+        if (k && (c & ~64u) == 1 && (uint64_t)(pb.e - pb.p) >= l) {
+            std::vector<uint8_t> tmp;
+            const uint8_t* b = pb.p;
+            size_t n = (size_t)l;
+            if (!(c & 64) || SnappyDecompress(b, n, tmp)) {
+                if (c & 64) { b = tmp.data(); n = tmp.size(); }
+                s.Header(b, n);
+            }
+        }
+        map = s.r.map;
+        // DEM_FileInfo at the offset the file starts with
+        uint32_t infoOff;
+        std::memcpy(&infoOff, head.data() + 8, 4);
+#ifdef _WIN32
+        if (infoOff > 16 && _fseeki64(f, infoOff, SEEK_SET) == 0) {
+#else
+        if (infoOff > 16 && fseeko(f, infoOff, SEEK_SET) == 0) {
+#endif
+            std::vector<uint8_t> tail(1 << 16);
+            tail.resize(std::fread(tail.data(), 1, tail.size(), f));
+            Pb fi(tail.data(), tail.size());
+            bool k2 = true;
+            const uint32_t c2 = (uint32_t)fi.varint(k2);
+            fi.varint(k2);
+            const uint64_t l2 = fi.varint(k2);
+            if (k2 && (c2 & ~64u) == 2 && (uint64_t)(fi.e - fi.p) >= l2) {
+                std::vector<uint8_t> tmp;
+                const uint8_t* b = fi.p;
+                size_t n = (size_t)l2;
+                if (!(c2 & 64) || SnappyDecompress(b, n, tmp)) {
+                    if (c2 & 64) { b = tmp.data(); n = tmp.size(); }
+                    s.FileInfo(b, n);
+                    ticks = s.r.ticks;
+                }
+            }
+        }
+    }
+    std::fclose(f);
+    return ok;
 }
 
 Result ScanFile(const std::string& path) {

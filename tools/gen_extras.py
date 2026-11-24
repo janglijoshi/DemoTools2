@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 janglijoshi. All rights reserved.
-# Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+# Copyright (c) 2026 janglijoshi
+# Part of DemoTools2, released under the MIT License - see LICENSE.
 """Generates src/extras.gen.h: stickers, charms and agents for the DemoTools2 menu.
 
 usage: python3 tools/gen_extras.py <skinstudio_catalog.json> [items_game.txt]

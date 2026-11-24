@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 janglijoshi. All rights reserved.
-# Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+# Copyright (c) 2026 janglijoshi
+# Part of DemoTools2, released under the MIT License - see LICENSE.
 """Writes src/catalog.gen.h (guns, knives, gloves and their finishes) from SkinStudio's item catalog.
 
     python3 tools/gen_catalog.py <skinstudio_catalog.json> [<skins_en.json with legacy_model flags>]

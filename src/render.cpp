@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // The DemoTools2 window: its own small window drawn with OpenGL, next to / on top of CS2.
 //
 // Why not inside the game's frame: HLAE hooks CS2's DirectX 11 swap chain, device and render targets. Creating our own

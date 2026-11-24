@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include "util.h"
 #include <string>
@@ -44,6 +44,13 @@ struct Indexes {
 };
 
 namespace Game {
+// A pointer that can point at something: user-mode range (CS2 leaves -1, small numbers and freed values in fields
+// of entities it is tearing down - a demo jump does that to every player).
+inline bool LooksLikePtr(const void* p) {
+    const uintptr_t v = (uintptr_t)p;
+    return v >= 0x10000 && v < 0x7FFFFFFF0000ull;
+}
+
 extern Indexes I;
 extern void* client;          // Source2Client002
 extern void* engine;          // Source2EngineToClient001
@@ -137,6 +144,17 @@ void* ModelData(void* entity);               // the loaded model's data (nullptr
 
 // ---- for the camera (calc) tools
 bool SchemaField(const char* cls, const char* field, ptrdiff_t& out);   // quiet schema lookup
+bool ClientCode(uint8_t*& start, size_t& size);                         // client.dll's code section
+// Old-style (sequence) animations: C_BaseAnimGraph::PlaySequence(entity, "name"), as the script function does.
+// Found the first time CanPlaySequence() is asked.
+bool CanPlaySequence();
+bool PlaySequence(void* entity, const char* name);
+int AnimAlgorithm(void* entity);             // CBaseAnimGraphController::m_nAnimationAlgorithm, -1 if unknown
+bool SetAnimAlgorithm(void* entity, int value);   // set it and flag the entity for the game's rebuild
+// CS2 also looks there (in memory, until it closes). atHead: before the game's own folders - only for folders whose
+// file names can't clash with the game's (e.g. everything under "old_files/").
+bool AddSearchPath(const char* dir, const char* pathId, bool atHead = false);
+int FileExists(const char* name, const char* pathId);   // 1 / 0, -1 if the function wasn't found
 void* SceneNode(void* entity);               // CGameSceneNode*, or nullptr
 float CurTime();                             // game time (demo time), 0 if unknown
 float FrameTime();

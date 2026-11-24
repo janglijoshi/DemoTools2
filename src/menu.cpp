@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // The DemoTools2 window: a sidebar with five pages.
 //   Camera      follow / attach the camera to a player, every calc live, presets, and a dt2_ command line
 //   Cinematics  campath sequences (built with the demo paused), path keys, quick moves, hotkeys, recording the path
@@ -9,6 +9,7 @@
 #include "calc.h"
 #include "campath.h"
 #include "pov.h"
+#include "viewmodel.h"
 #include "record.h"
 #include "hotkeys.h"
 #include <windows.h>
@@ -34,6 +35,7 @@
 #include <vector>
 
 namespace Menu {
+static void ManualRecordButton(const char* id);
 enum Slot : int { SLOT_NONE = 0, SLOT_KNIFE = -1, SLOT_GLOVES = -2, SLOT_AGENT = -3 };   // > 0: a gun's definition index
 static const int kCatKnives = 5, kCatGloves = 6;
 
@@ -694,6 +696,7 @@ static uint64_t g_atXuid = 0;
 static float g_atFwd = 30, g_atRight = 0, g_atUp = 0, g_atPitch = 0, g_atYaw = 180, g_atRoll = 0, g_atFov = 0, g_atSmooth = 0;
 static char g_atCustom[64] = "muzzle_flash";
 static bool g_atLive = false;   // the attach camera is what's on: sliders update it
+static bool g_atKeepGun = true; // gun parts: stay on the gun from Attach camera, also when it's holstered
 
 static void ApplyAttach(bool quiet) {
     char b[256];
@@ -704,7 +707,13 @@ static void ApplyAttach(bool quiet) {
     Console::Run(b);
     const Part& p = kParts[g_atPart];
     std::string kind = p.kind;
-    if (kind == "att" || kind == "gun") Console::Run("dt2_calc handle add at_gun weapon at_target");
+    if (kind == "att" || kind == "gun") {
+        if (!quiet) {   // Attach camera: the gun in their hand now is the one it stays on
+            std::lock_guard<std::mutex> g(Calc::lock);
+            Calc::ResetKeptGuns();
+        }
+        Console::Run(g_atKeepGun ? "dt2_calc handle add at_gun keptgun at_target" : "dt2_calc handle add at_gun weapon at_target");
+    }
     if (kind == "att") {
         std::snprintf(b, sizeof(b), "dt2_calc vecang add at_part attachment at_gun %s", *p.arg ? p.arg : (g_atCustom[0] ? g_atCustom : "muzzle_flash"));
         Console::Run(b);
@@ -720,8 +729,9 @@ static void ApplyAttach(bool quiet) {
     const char* base = "at_part";
     if (g_atTurn == 1) { Console::Run("dt2_calc vecang add at_base mix at_part at_eye"); base = "at_base"; }
     else if (g_atTurn == 2) { Console::Run("dt2_calc vecang add at_base level at_part"); base = "at_base"; }
-    std::snprintf(b, sizeof(b), "dt2_calc vecang add at_mount offset %s %.1f %.1f %.1f %.1f %.1f %.1f", base, g_atFwd, g_atRight, g_atUp, g_atPitch,
-                  g_atYaw, g_atRoll);
+    // mountkeys = offset that follows the points below when they are on (else these numbers)
+    std::snprintf(b, sizeof(b), "dt2_calc vecang add at_mount mountkeys %s %.1f %.1f %.1f %.1f %.1f %.1f", base, g_atFwd, g_atRight, g_atUp,
+                  g_atPitch, g_atYaw, g_atRoll);
     Console::Run(b);
     std::string view = "at_mount";
     if (g_atTurn == 3) { Console::Run("dt2_calc vecang add at_look lookat at_mount at_eye"); view = "at_look"; }
@@ -731,14 +741,109 @@ static void ApplyAttach(bool quiet) {
         view = "at_cam";
     }
     Console::Run("dt2_cam source " + view);
-    if (g_atFov > 0) {
-        std::snprintf(b, sizeof(b), "dt2_calc fov add at_fov value %.0f", g_atFov);
-        Console::Run(b);
-        Console::Run("dt2_cam fov at_fov");
-    } else {
-        Console::Run("dt2_cam fov game");
-    }
+    std::snprintf(b, sizeof(b), "dt2_calc fov add at_fov mountkeys %.0f", g_atFov);   // no value (0, no points) = the game's
+    Console::Run(b);
+    Console::Run("dt2_cam fov at_fov");
     Calc::SetQuiet(false);
+}
+
+// ---- points on the mount: where the camera sits on the part at moments of the demo, glided through as it plays
+static int g_atKeySel = -1;
+static std::string g_atKeyMsg;
+static ImVec4 g_atKeyCol;
+static void AtValues(float v[7]) { v[0] = g_atFwd; v[1] = g_atRight; v[2] = g_atUp; v[3] = g_atPitch; v[4] = g_atYaw; v[5] = g_atRoll; v[6] = g_atFov; }
+static void AtFromValues(const float v[7]) { g_atFwd = v[0]; g_atRight = v[1]; g_atUp = v[2]; g_atPitch = v[3]; g_atYaw = v[4]; g_atRoll = v[5]; g_atFov = v[6]; }
+
+static void MountPointsPanel() {
+    Ui::Section("Points on the mount");
+    std::vector<Calc::MountKey> keys;
+    bool on;
+    {
+        std::lock_guard<std::mutex> g(Calc::lock);
+        keys = Calc::mountKeys;
+        on = Calc::mountKeysOn;
+    }
+    Hint("The camera stays on the part, and glides between points as the demo plays. Pause, set the camera with the numbers "
+         "above, Add point; go to a later moment, change the numbers, Add point again.");
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    if (Ui::PrimaryButton("Add point here##atk", ImVec2(half, 0))) {
+        float v[7];
+        AtValues(v);
+        std::string why;
+        int i;
+        {
+            std::lock_guard<std::mutex> g(Calc::lock);
+            i = Calc::MountKeysAdd(v, &why);
+            if (i >= 0 && Calc::mountKeys.size() >= 2) Calc::mountKeysOn = true;
+        }
+        if (i < 0) { g_atKeyMsg = why; g_atKeyCol = Ui::kWarn; }
+        else {
+            g_atKeySel = i;
+            g_atKeyMsg = keys.size() + 1 >= 2 ? "Point added. The camera glides through the points as the demo plays."
+                                              : "First point added. Go to another moment, move the camera, add the next.";
+            g_atKeyCol = Ui::kGood;
+            if (!g_atLive) { ApplyAttach(false); Run("dt2_cam enabled 1"); }
+        }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The numbers above (position, rotation, FOV) at this moment of the demo.");
+    ImGui::SameLine();
+    if (ImGui::Button("Clear points##atk", ImVec2(-1, 0))) {
+        std::lock_guard<std::mutex> g(Calc::lock);
+        Calc::mountKeys.clear();
+        Calc::mountKeysOn = false;
+        g_atKeySel = -1;
+        g_atKeyMsg.clear();
+    }
+    if (Ui::Toggle("Glide through the points", &on)) {
+        std::lock_guard<std::mutex> g(Calc::lock);
+        Calc::mountKeysOn = on;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: the camera stays where the numbers above put it.");
+    if (!g_atKeyMsg.empty()) ImGui::TextColored(g_atKeyCol, "%s", g_atKeyMsg.c_str());
+    if (keys.empty()) return;
+    ImGui::BeginChild("##atkeys", ImVec2(0, std::min(Ui::S(30) * keys.size() + Ui::S(10), Ui::S(180))), ImGuiChildFlags_Borders);
+    const double t0 = keys.front().t;
+    int remove = -1;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        const auto& k = keys[i];
+        ImGui::PushID((int)i);
+        char label[96];
+        std::snprintf(label, sizeof label, "%zu  tick %d  +%.2f s", i + 1, k.tick, k.t - t0);
+        if (ImGui::Selectable(label, g_atKeySel == (int)i, 0, ImVec2(ImGui::GetContentRegionAvail().x - Ui::S(150), 0))) {
+            g_atKeySel = (int)i;
+            AtFromValues(k.v);   // its numbers in the sliders
+            if (g_atLive) ApplyAttach(true);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("forward %.1f right %.1f up %.1f\npitch %.0f yaw %.0f roll %.0f\nFOV %s", k.v[0], k.v[1], k.v[2], k.v[3], k.v[4], k.v[5],
+                              k.v[6] > 0 ? std::to_string((int)k.v[6]).c_str() : "game");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Go to")) {
+            if (k.tick >= 0) {
+                char b[64];
+                std::snprintf(b, sizeof b, "demo_gototick %d", k.tick);
+                Campath::QueueCommand(b);
+            }
+            g_atKeySel = (int)i;
+            AtFromValues(k.v);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Set")) {   // this point = the numbers above
+            std::lock_guard<std::mutex> g(Calc::lock);
+            if (i < Calc::mountKeys.size()) AtValues(Calc::mountKeys[i].v);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Give this point the numbers above (its moment stays).");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = (int)i;
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    if (remove >= 0) {
+        std::lock_guard<std::mutex> g(Calc::lock);
+        if (remove < (int)Calc::mountKeys.size()) Calc::mountKeys.erase(Calc::mountKeys.begin() + remove);
+        if (Calc::mountKeys.empty()) Calc::mountKeysOn = false;
+        g_atKeySel = -1;
+    }
 }
 
 static void AttachPanel() {
@@ -766,6 +871,16 @@ static void AttachPanel() {
     if (std::string(kParts[g_atPart].kind) == "att" && !*kParts[g_atPart].arg) {
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputTextWithHint("##atcustom", "attachment name (dt2_calc probe at_gun lists them)", g_atCustom, sizeof(g_atCustom))) changed = true;
+    }
+    {
+        const std::string kind = kParts[g_atPart].kind;
+        if (kind == "att" || kind == "gun") {
+            if (Ui::Toggle("Stay on this gun", &g_atKeepGun)) changed = true;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("On: the camera stays on the gun that was in their hand when you pressed Attach camera,\n"
+                                  "also when they switch to another weapon and it is holstered on their back.\n"
+                                  "Off: always the gun in their hand.");
+        }
     }
     ImGui::SetNextItemWidth(-1);
     if (ImGui::Combo("##atturn", &g_atTurn, kTurn, IM_ARRAYSIZE(kTurn))) changed = true;
@@ -801,7 +916,13 @@ static void AttachPanel() {
         std::lock_guard<std::mutex> g(Calc::lock);
         g_atLive = Calc::cam.enabled && Calc::cam.source.rfind("at_", 0) == 0;   // the attach camera is the one that's on
     }
-    if (changed && g_atLive) ApplyAttach(true);   // live while you drag
+    if (changed && g_atLive) {   // live while you drag (also over the points while the demo stands still)
+        ApplyAttach(true);
+        float v[7];
+        AtValues(v);
+        std::lock_guard<std::mutex> g(Calc::lock);
+        Calc::MountOverride(v);
+    }
     if (g_atLive) {
         // Is the chosen part there right now?
         bool found = false, known = false;
@@ -813,6 +934,7 @@ static void AttachPanel() {
                                kParts[g_atPart].label);
     }
     Hint("Drag the numbers while the camera is on to place it. Save it as a preset below.");
+    MountPointsPanel();
 }
 
 static void FollowPanel() {
@@ -855,7 +977,44 @@ static void FollowPanel() {
     ImGui::SameLine();
     if (ImGui::Button("Stop camera", ImVec2(Ui::S(120), 0))) Run("dt2_cam enabled 0");
     ImGui::Spacing();
-    ImGui::TextWrapped("Record it with HLAE as usual (mirv_streams). The camera only changes the view while a demo plays.");
+    ImGui::TextWrapped("The camera only changes the view while a demo plays. Record what you see with Record from here "
+                       "below (HLAE or DTRecord - see Recorder in the Record tab).");
+}
+
+// Record from now until Stop: the view as it is (DemoTools2 camera, campath, free camera)
+static void ManualRecordButton(const char* id) {
+    const Record::Progress pr = Record::Status();
+    char label[64];
+    if (Record::ManualRunning()) {
+        std::snprintf(label, sizeof label, "Stop recording##man_%s", id);
+        if (Ui::PrimaryButton(label, ImVec2(Ui::S(160), 0))) Record::Stop();
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(pr.state.c_str());
+        return;
+    }
+    int recorder;
+    {
+        std::lock_guard<std::mutex> g(Record::lock);
+        recorder = Record::set.recorder;
+    }
+    std::string why;
+    const bool can = !Record::RecorderFor(recorder, &why).empty() && Skins::demoPlaying && !pr.running;
+    std::snprintf(label, sizeof label, "Record from here##man_%s", id);
+    ImGui::BeginDisabled(!can);
+    if (ImGui::Button(label, ImVec2(Ui::S(160), 0))) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char name[64];
+        std::snprintf(name, sizeof name, "recording_%02d%02d%02d", st.wHour, st.wMinute, st.wSecond);
+        Record::StartManual(name);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Records the view from the current moment until you press Stop recording (or dt2_record stop),\n"
+                          "with the video settings of the Record tab. Console: dt2_record start [name].");
+    if (!pr.running && !Record::ManualRunning() && !why.empty() && Skins::demoPlaying) Hint("Can't record: %s.", why.c_str());
+    if (!pr.running && !pr.post.empty()) Hint("%s", pr.post.c_str());
 }
 
 static void CameraPanel() {
@@ -904,6 +1063,29 @@ static void CameraPanel() {
     if (c.active) {
         ImGui::Text("pos %.1f %.1f %.1f", c.out.pos.x, c.out.pos.y, c.out.pos.z);
         ImGui::Text("ang %.1f %.1f %.1f   fov %s", c.out.ang.x, c.out.ang.y, c.out.ang.z, c.outFov > 0 ? std::to_string((int)c.outFov).c_str() : "game");
+    }
+
+    ImGui::Spacing();
+    Ui::Heading("Record");
+    {
+        Record::Settings rs;
+        {
+            std::lock_guard<std::mutex> g(Record::lock);
+            rs = Record::set;
+        }
+        Hint("What the camera shows, from now until Stop recording - %s, %d fps%s. Settings: Record tab.",
+             rs.recorder == Record::Rec_DTRecord ? "DTRecord" : "HLAE", rs.fps,
+             rs.recorder == Record::Rec_DTRecord && rs.sound ? ", with sound" : "");
+    }
+    ManualRecordButton("camout");
+    {
+        const std::string out = Record::OutDir();
+        Hint("Saved to %s", out.c_str());
+        if (ImGui::SmallButton("Open folder##camrec")) {
+            CreateDirectoryA((DllFolder() + "recordings").c_str(), nullptr);
+            CreateDirectoryA(out.c_str(), nullptr);
+            ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
     }
 
     ImGui::Spacing();
@@ -978,17 +1160,64 @@ static void CalcsPanel() {
     ImGui::EndChild();
 }
 
+// ------------------------------------------------------------------ Viewmodel (Camera page tab)
+static void ViewmodelPanel() {
+    Ui::Heading("Position and FOV");
+    if (!Viewmodel::Available()) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(Ui::kWarn, "%s", Viewmodel::Status().c_str());
+        ImGui::PopTextWrapPos();
+        return;
+    }
+    Viewmodel::Settings v = Viewmodel::Get();
+    bool changed = false;
+    changed |= Ui::Toggle("Custom viewmodel", &v.custom);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: every player's own viewmodel, as the demo recorded it.\n"
+                          "On: your position and FOV for everyone's first-person gun.");
+    if (!v.custom) ImGui::BeginDisabled();
+    const float bw = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * (Viewmodel::kNumPresets - 1)) / Viewmodel::kNumPresets;
+    for (int i = 0; i < Viewmodel::kNumPresets; ++i) {
+        const auto& p = Viewmodel::kPresets[i];
+        if (i) ImGui::SameLine();
+        if (ImGui::Button(p.name, ImVec2(bw, 0))) { v.x = p.x; v.y = p.y; v.z = p.z; v.fov = p.fov; changed = true; }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%.1f / %.1f / %.1f, FOV %.0f", p.x, p.y, p.z, p.fov);
+    }
+    float lo[4], hi[4];
+    Viewmodel::Limits(v.extended, lo, hi);
+    const float lw = Ui::S(110);
+    ImGui::SetNextItemWidth(-lw);
+    changed |= ImGui::SliderFloat("Left / right", &v.x, lo[0], hi[0], "%.1f");
+    ImGui::SetNextItemWidth(-lw);
+    changed |= ImGui::SliderFloat("Back / forward", &v.y, lo[1], hi[1], "%.1f");
+    ImGui::SetNextItemWidth(-lw);
+    changed |= ImGui::SliderFloat("Down / up", &v.z, lo[2], hi[2], "%.1f");
+    ImGui::SetNextItemWidth(-lw);
+    changed |= ImGui::SliderFloat("FOV", &v.fov, lo[3], hi[3], "%.0f");
+    changed |= Ui::Toggle("Past CS2's limits", &v.extended);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("CS2 keeps the viewmodel within -2..2.5 / -2..2 / -2..2 and FOV 60..68.\n"
+                          "On: -10..10 and FOV 40..120.");
+    if (!v.custom) ImGui::EndDisabled();
+    if (changed) Viewmodel::Set(v);
+    Hint("%s. With the POV HUD on, the gun keeps the player's own position. Console: dt2_viewmodel", Viewmodel::Status().c_str());
+}
+
 static void CameraTab() {
     float h = ImGui::GetContentRegionAvail().y;
     ImGui::BeginChild("##camleft", ImVec2(std::clamp(ImGui::GetContentRegionAvail().x * 0.38f, Ui::S(340), Ui::S(440)), h), ImGuiChildFlags_Borders);
     Ui::SmoothScroll();
+    bool vmTab = false;
     if (ImGui::BeginTabBar("##camtabs")) {
         if (ImGui::BeginTabItem("Attach to a part")) { AttachPanel(); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Follow a player")) { FollowPanel(); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Viewmodel")) { vmTab = true; ViewmodelPanel(); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
-    ImGui::Spacing();
-    CameraPanel();
+    if (!vmTab) {   // the camera output belongs to the two camera tabs
+        ImGui::Spacing();
+        CameraPanel();
+    }
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("##camright", ImVec2(0, h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
@@ -1240,8 +1469,13 @@ static void CinematicRecordSection() {
         if (Ui::PrimaryButton("Stop recording", ImVec2(Ui::S(150), 0))) Record::Stop();
         Hint("Leave CS2 alone while it records.");
     } else {
-        const bool playing = Skins::demoPlaying, hlae = Record::HlaeLoaded();
-        const bool ready = n >= 2 && tick0 >= 0 && tick1 > tick0 && playing && hlae;
+        int recorder;
+        {
+            std::lock_guard<std::mutex> g(Record::lock);
+            recorder = Record::set.recorder;
+        }
+        const bool playing = Skins::demoPlaying, canRec = !Record::RecorderFor(recorder, nullptr).empty();
+        const bool ready = n >= 2 && tick0 >= 0 && tick1 > tick0 && playing && canRec;
         ImGui::BeginDisabled(!ready);
         if (Ui::PrimaryButton("Record path", ImVec2(Ui::S(150), 0))) {
             SYSTEMTIME st;
@@ -1260,10 +1494,33 @@ static void CinematicRecordSection() {
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         if (n >= 2) ImGui::TextDisabled("%.1f s, ticks %d - %d", t1 - t0, tick0, tick1);
+        else ImGui::TextDisabled("as the demo plays");
+        // the same path, flown while the demo stays paused at this moment (frozen time)
+        ImGui::BeginDisabled(!(n >= 2 && playing && canRec));
+        if (ImGui::Button("Freeze path record", ImVec2(Ui::S(150), 0))) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char name[128];
+            std::snprintf(name, sizeof name, "freeze_%s_%02d%02d%02d", g_cpName[0] ? g_cpName : "path", st.wHour, st.wMinute, st.wSecond);
+            Campath::StopPreview();
+            Record::StartFreeze(name);
+            CpNote("Freeze path record - the demo stays paused here and the camera flies the whole path.", Ui::kGood);
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Pauses the demo at the current moment and records the whole path (%.1f s) flying through\n"
+                              "the frozen scene. Same recorder and video settings; no sound (the demo is paused).", t1 - t0);
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("demo paused, time frozen");
         if (n < 2) Hint("Make a path first (a sequence and Generate, or path keys).");
         else if (tick0 < 0) Hint("The path's demo ticks aren't known - add or generate it while the demo plays.");
         else if (!playing) Hint("Play the demo (pausing is fine) to record.");
-        else if (!hlae) Hint("Start CS2 through HLAE to record.");
+        else if (!canRec) {
+            std::string why;
+            Record::RecorderFor(recorder, &why);
+            Hint("Can't record: %s.", why.c_str());
+        }
         if (!pr.state.empty()) Hint("Last run: %s", pr.state.c_str());
     }
     if (!pr.post.empty()) Hint("%s", pr.post.c_str());
@@ -1482,10 +1739,15 @@ static void CinematicsLeft() {
     Section("POV HUD (DemoTools2, test)");
     {
         bool on = Pov::Mode() != 0;
-        if (Ui::Toggle("POV HUD", &on)) Pov::SetMode(on ? 1 : 0);
+        if (Ui::Toggle("POV HUD", &on)) Pov::SetMode(on ? 1 : 0, true);
         Hint("%s", Pov::Status().c_str());
+        if (ImGui::Button("Reload view", ImVec2(Ui::S(110), 0))) Pov::ReloadView();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Jumps the demo to where it is, so CS2 builds the gun, hands and screen effects again.\n"
+                              "Also done by itself when you switch the POV HUD off.");
         Hint("Shows the watched player's own HUD on a GOTV demo, as in their POV demo - DemoTools2's own version, no special "
-             "HLAE needed. Watch a player in first person (not free / chase camera). Test stage: tell us what works. Console: dt2_pov 1|0");
+             "HLAE needed. Watch a player in first person (not free / chase camera). Test stage: tell us what works. "
+             "Console: dt2_pov 1|0");
     }
 
     Section("POV HUD (HLAE mirv_pov)");
@@ -1707,19 +1969,66 @@ static bool BrowseDemo(char* path) {
 }
 
 // Motion blur, frame rate, stretch, quality - shared by the Record tab and the Cinematics tab (same settings)
+static bool g_rcSaveRecorder = false;   // the recorder choice changed: save it (outside Record::lock)
 static void VideoSettings(bool killClips) {
+    if (g_rcSaveRecorder) { g_rcSaveRecorder = false; Record::SaveSettings(); }
     int gw = 0, gh = 0, sw = 0, sh = 0;   // CS2's size, looked up outside the lock (see Record::GameSize)
     const bool known = Record::GameSize(gw, gh);
     const bool narrow = known && Record::StretchSize(gw, gh, sw, sh);
     {
         std::lock_guard<std::mutex> g(Record::lock);
+        // which recorder: HLAE's mirv_streams or DTRecord (DemoTools2's own) - the one chosen here is used
+        static const char* kRec[] = {"HLAE", "DTRecord"};
+        CpLabel("Recorder");
+        if (Ui::Segmented("##rc_rec", kRec, 2, &Record::set.recorder)) g_rcSaveRecorder = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("HLAE: HLAE's recording (mirv_streams), as before.\n"
+                              "DTRecord: DemoTools2's own recorder. It doesn't use HLAE's recording, so it keeps working when\n"
+                              "HLAE isn't updated for the newest CS2 yet. It reads the picture from DirectX 11, does the motion\n"
+                              "blur itself, and records the game sound with it.");
+        {
+            std::string why;
+            const std::string use = Record::RecorderFor(Record::set.recorder, &why);
+            if (use.empty()) ImGui::TextColored(Ui::kWarn, "Can't record: %s.", why.c_str());
+            else if (use == "HLAE") {
+                Hint("Records with HLAE's recording (mirv_streams).");
+                const std::string warn = Record::HlaeWarning();
+                if (!warn.empty()) ImGui::TextColored(Ui::kWarn, "%s", warn.c_str());
+            } else Hint("Records with DTRecord, DemoTools2's own recorder (HLAE's recording isn't used).");
+            if (Record::set.recorder == Record::Rec_DTRecord) {
+                if (Ui::Toggle("Game sound", &Record::set.sound)) Record::SaveSettings();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Records CS2's own sound into the clips (Windows 10 version 2004 or newer).\n"
+                                      "Off: clips without sound.");
+                if (Record::set.sound) {
+                    static const char* kPass[] = {"With the picture", "Second pass"};
+                    int sel = Record::set.samePass ? 0 : 1;
+                    CpLabel("Sound");
+                    if (Ui::Segmented("##rc_pass", kPass, 2, &sel)) {
+                        Record::set.samePass = sel == 0;
+                        Record::SaveSettings();
+                    }
+                    if (Record::set.samePass)
+                        Hint("Each clip plays once in real time; picture and sound are recorded together and saved as one MP4. "
+                             "Motion blur blends the frames CS2 shows, so it is smoother the higher CS2's FPS.");
+                    else
+                        Hint("The picture is recorded at a fixed game step (exact motion blur), then the clip plays again in "
+                             "real time for the sound; both are joined into one MP4.");
+                }
+            }
+        }
         Ui::Toggle("Motion blur", &Record::set.blur);
         ImGui::PushItemWidth(-Ui::S(130));
         static const char* kFps[] = {"30", "60", "120"};
         int fpsSel = Record::set.fps <= 30 ? 0 : Record::set.fps >= 120 ? 2 : 1;
         CpLabel("Frame rate");
         if (Ui::Segmented("##rc_fps", kFps, 3, &fpsSel)) Record::set.fps = fpsSel == 0 ? 30 : fpsSel == 2 ? 120 : 60;
-        if (Record::set.blur) {
+        const bool realTime = Record::set.recorder == Record::Rec_DTRecord && Record::set.sound && Record::set.samePass;
+        if (Record::set.blur && realTime) {
+            ImGui::SliderFloat("Blur amount", &Record::set.blurAmount, 0.1f, 1.f, "%.2f");
+            Hint("Recording in real time: the blur blends the frames CS2 shows in each video frame's time - the higher CS2's FPS, "
+                 "the more frames (300 FPS, 60 fps video, amount 0.5: 2-3). For the exact fixed-step blur, set Sound to Second pass.");
+        } else if (Record::set.blur) {
             static const char* kSmp[] = {"4", "8", "16", "32"};
             int smpSel = Record::set.samples <= 4 ? 0 : Record::set.samples <= 8 ? 1 : Record::set.samples <= 16 ? 2 : 3;
             CpLabel("Blur samples");
@@ -1751,7 +2060,7 @@ static void RecordLeft() {
     const Record::Progress pr = Record::Status();
 
     Hint("Records every kill of one player from the demo you are watching, with motion blur, as MP4 files - through HLAE's "
-         "recording (mirv_streams) and its ffmpeg.");
+         "recording or DTRecord, DemoTools2's own (Recorder, under 5. Video).");
     Section("1. The demo");
     {
         std::string file = sc.path;
@@ -1760,8 +2069,8 @@ static void RecordLeft() {
         if (sc.busy) Hint("Reading %s for kills...", file.c_str());
         else if (sc.result.ok) {
             ImGui::TextUnformatted(file.c_str());
-            Hint("%s - %u rounds, %u kills (found by itself: the demo CS2 is playing).", sc.result.map.c_str(),
-                 (unsigned)sc.result.roundStarts.size(), (unsigned)sc.result.kills.size());
+            Hint("%s - %u rounds, %u kills.", sc.result.map.c_str(), (unsigned)sc.result.roundStarts.size(), (unsigned)sc.result.kills.size());
+            if (ImGui::SmallButton("Not this demo? Choose the file") && BrowseDemo(g_rcPath)) Record::StartScan(g_rcPath);
         } else if (!sc.path.empty()) Hint("Couldn't read %s: %s", file.c_str(), sc.result.error.c_str());
         else if (!Skins::demoPlaying) Hint("Play a demo - DemoTools2 finds its file and reads every kill by itself.");
         else if (Record::AutoFindFailed()) {
@@ -1829,9 +2138,8 @@ static void RecordLeft() {
             ShellExecuteA(nullptr, "open", out.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
         const std::string ff = Record::FfmpegPath();
-        if (!Record::HlaeLoaded()) Hint("HLAE isn't loaded - recording needs CS2 started through HLAE.");
-        if (ff.empty()) Hint("ffmpeg.exe not found automatically (looked in: %s). Pick it below - it's in HLAE's ffmpeg folder, "
-                             "usually ffmpeg\\bin\\ffmpeg.exe.", Record::FfmpegSearched().c_str());
+        if (ff.empty()) Hint("ffmpeg.exe not found automatically (looked in: %s). Pick it below - HLAE's ffmpeg folder "
+                             "(ffmpeg\\bin\\ffmpeg.exe), or put ffmpeg.exe in DemoTools2's folder.", Record::FfmpegSearched().c_str());
         else Hint("ffmpeg: %s", ff.c_str());
         if (ImGui::Button("Choose ffmpeg.exe", ImVec2(Ui::S(150), 0))) {
             char file[MAX_PATH] = "";
@@ -1840,7 +2148,7 @@ static void RecordLeft() {
             o.lpstrFilter = "ffmpeg.exe\0ffmpeg.exe\0Programs\0*.exe\0";
             o.lpstrFile = file;
             o.nMaxFile = MAX_PATH;
-            o.lpstrTitle = "ffmpeg.exe (in HLAE's ffmpeg folder)";
+            o.lpstrTitle = "ffmpeg.exe";
             o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
             if (GetOpenFileNameA(&o)) {
                 std::lock_guard<std::mutex> g(Record::lock);
@@ -1895,14 +2203,21 @@ static void RecordRight() {
         char label[64];
         std::snprintf(label, sizeof label, "Record %d clip%s", on, on == 1 ? "" : "s");
         const bool playing = Skins::demoPlaying;
-        ImGui::BeginDisabled(on == 0 || !Record::HlaeLoaded() || !playing);
+        int recorder;
+        {
+            std::lock_guard<std::mutex> g(Record::lock);
+            recorder = Record::set.recorder;
+        }
+        std::string why;
+        const bool canRec = !Record::RecorderFor(recorder, &why).empty();
+        ImGui::BeginDisabled(on == 0 || !canRec || !playing);
         if (Ui::PrimaryButton(label, ImVec2(Ui::S(170), 0))) Record::Start(g_rcClips);
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::AlignTextToFramePadding();
         ImGui::TextDisabled("%.0f s of video", secs);
         if (on > 0 && !playing) Hint("Play this demo in CS2 (pausing is fine) - recording jumps through it.");
-        else if (on > 0 && !Record::HlaeLoaded()) Hint("Start CS2 through HLAE to record.");
+        else if (on > 0 && !canRec) ImGui::TextColored(Ui::kWarn, "Can't record: %s.", why.c_str());
         if (!pr.state.empty()) Hint("Last run: %s", pr.state.c_str());
     }
     if (!pr.post.empty()) Hint("%s", pr.post.c_str());
@@ -2206,7 +2521,7 @@ void Draw(bool fillWindow) {
         static const char* kSub[] = {
             "Follow a player or bolt the camera to a part of them. Every move is a dt2_calc you can change live.",
             "Build a campath with the demo paused, let DemoTools2 time it, then preview and record it.",
-            "Every kill of one player in the demo you are watching, with motion blur, saved as MP4 through HLAE.",
+            "Every kill of one player in the demo you are watching, with motion blur, saved as MP4.",
             "Give any player any finish, knife, gloves or agent. Saved per player and used in every demo.",
             "What DemoTools2 found in this CS2 build."};
         const bool beta = g_page == Page_Camera;

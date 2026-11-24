@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 #pragma once
 #include <cstdint>
 #include <mutex>
@@ -15,6 +15,16 @@ struct Vec3 { float x = 0, y = 0, z = 0; };
 struct View { Vec3 pos, ang; };   // ang: pitch, yaw, roll (degrees, Source convention)
 
 enum class Kind { Handle, VecAng, Fov };
+
+// Points for a camera mounted on a part (the Attach tab): where the camera sits on the part at moments of the demo -
+// forward, right, up, pitch, yaw, roll, fov (0 = game) - glided through as the demo plays. Guarded by `lock`.
+struct MountKey { double t = 0; int tick = -1; float v[7] = {}; };
+extern std::vector<MountKey> mountKeys;    // sorted by t
+extern bool mountKeysOn;                   // the "mountkeys" calcs follow the points
+// While the demo stands still, the window's sliders are shown instead of the points (to set up the next point).
+void MountOverride(const float v[7]);
+int MountKeysAdd(const float v[7], std::string* why);   // at the current demo time; index, -1 = no demo time
+bool MountKeysAt(double t, float out[7]);               // the glide at demo time t (false: no points)
 
 // What the window shows (copied once per frame under the lock).
 struct Preview {
@@ -45,7 +55,9 @@ std::vector<Preview> Snapshot(); // for the window
 std::vector<std::string> Names(Kind kind);
 std::string Help();
 uint64_t ObservedXuid();
-void SetQuiet(bool quiet);       // no "added/replaced" console lines (live sliders in the window)         // the player whose eyes the demo shows right now (0 if none)
+void SetQuiet(bool quiet);       // no "added/replaced" console lines (live sliders in the window)
+// "keptgun" handles: forget which gun each player's camera stays on (the next look takes the gun in their hand).
+void ResetKeptGuns();
 
 // Commands (also used by presets and the window). Each prints its result to the console.
 void CmdCalc(const std::vector<std::string>& args);

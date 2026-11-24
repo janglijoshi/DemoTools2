@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // Cinematics hotkeys - see hotkeys.h.
 #include "hotkeys.h"
 #include "campath.h"
@@ -178,7 +178,7 @@ static void Run(Action a) {
     case Undo: Note(Campath::Undo() ? "undone" : "nothing to undo"); break;
     case PovToggle: {
         const bool on = Pov::Mode() == 0;
-        Pov::SetMode(on ? 1 : 0);
+        Pov::SetMode(on ? 1 : 0, true);
         Note(on ? "POV HUD on" : "POV HUD off");
         break;
     }

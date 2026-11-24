@@ -1,8 +1,8 @@
 # Notices
 
-DemoTools2 is Copyright (c) 2026 janglijoshi. All rights reserved. See [LICENSE](LICENSE).
+DemoTools2 is Copyright (c) 2026 janglijoshi and released under the MIT License. See [LICENSE](LICENSE).
 
-The parts below are not covered by the DemoTools2 licence. They belong to their authors and keep their own licences.
+The parts below are not covered by the DemoTools2 licence notice. They belong to their authors and keep their own licences.
 
 | Component | Where | Licence |
 |---|---|---|

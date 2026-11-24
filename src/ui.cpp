@@ -1,5 +1,5 @@
-// Copyright (c) 2026 janglijoshi. All rights reserved.
-// Part of DemoTools2. Use is governed by the DemoTools2 Source-Available License - see LICENSE.
+// Copyright (c) 2026 janglijoshi
+// Part of DemoTools2, released under the MIT License - see LICENSE.
 // DemoTools2 window look: a dark gunmetal theme with a brass accent, Segoe UI text that stays sharp at any DPI,
 // mouse-wheel scrolling that glides instead of jumping, and a few animated widgets.
 #include "ui.h"
