@@ -1,6 +1,6 @@
 <div align="center">
-  <a href="https://youtu.be/inYPRkl38-4">
-    <img src="docs/tutorial-video.jpg" alt="DemoTools2 tutorial video: before and after of an AK-47 skin. Click to watch on YouTube" width="820">
+  <a href="https://youtu.be/bQbu0MUAt7w">
+    <img src="docs/DemoTools2-v2.1-thumbnail.jpg" alt="DemoTools2 tutorial video: Major Update Tutorial on Youtube" width="820">
   </a>
   <h1>DemoTools2</h1>
   <p>
